@@ -26,6 +26,8 @@ type Stats struct {
 	WIPPRCount                  int
 	AverageReviewersPerPR       float64
 	SelfMergeRate               float64
+	SelfMergeWithApproval       int
+	SelfMergeWithoutApproval    int
 	MergeTypeTrend              map[string]float64 // squash, merge, rebase
 	CommitFrequencyPerWeek      float64
 	ReleaseCount                int
@@ -40,6 +42,12 @@ type Stats struct {
 	AverageHotfixAfterRelease   time.Duration
 	MedianHotfixAfterRelease    time.Duration
 	HotfixWithoutReleaseContext int
+	FeatureToReleaseCount       int
+	AverageFeatureToRelease     time.Duration
+	MedianFeatureToRelease      time.Duration
+	ReleaseToMainCount          int
+	AverageReleaseToMain        time.Duration
+	MedianReleaseToMain         time.Duration
 
 	// Comment timing metrics
 	AverageTimeToFirstComment time.Duration
@@ -86,6 +94,8 @@ func CalculateStats(prs []github.PullRequest) Stats {
 	var validCommitToPRCount int
 	var totalReviewers int
 	var selfMergedCount int
+	var selfMergedWithApproval int
+	var selfMergedWithoutApproval int
 	var approvalMergeCount int
 	mergeTypeCounts := make(map[string]int)
 	var reopenedPRs int
@@ -98,6 +108,10 @@ func CalculateStats(prs []github.PullRequest) Stats {
 		mergedAt time.Time
 	}
 	var hotfixRecords []hotfixRecord
+	var featureToReleaseDurations []time.Duration
+	var releaseToMainDurations []time.Duration
+	var featureToReleaseCount int
+	var releaseToMainCount int
 
 	var openPRs int
 	var earliestPRDate, latestPRDate time.Time
@@ -122,6 +136,9 @@ func CalculateStats(prs []github.PullRequest) Stats {
 	var prsWithoutReviewComments int
 
 	for _, pr := range prs {
+		headLower := strings.ToLower(pr.HeadRefName)
+		baseLower := strings.ToLower(pr.BaseRefName)
+
 		// Track date range for commit frequency calculation
 		if earliestPRDate.IsZero() || pr.CreatedAt.Before(earliestPRDate) {
 			earliestPRDate = pr.CreatedAt
@@ -237,13 +254,17 @@ func CalculateStats(prs []github.PullRequest) Stats {
 		// Self-Merge Rate
 		if pr.Merged && pr.Author.Login == pr.MergedBy.Login {
 			selfMergedCount++
-		}
-
-		// Release count: merged into main/master
-		if pr.Merged && (strings.EqualFold(pr.BaseRefName, "main") || strings.EqualFold(pr.BaseRefName, "master")) {
-			releaseCount++
-			if !pr.MergedAt.IsZero() {
-				releaseMergeTimes = append(releaseMergeTimes, pr.MergedAt)
+			hasApproval := false
+			for _, r := range pr.Reviews {
+				if strings.EqualFold(r.State, "APPROVED") {
+					hasApproval = true
+					break
+				}
+			}
+			if hasApproval {
+				selfMergedWithApproval++
+			} else {
+				selfMergedWithoutApproval++
 			}
 		}
 
@@ -280,6 +301,22 @@ func CalculateStats(prs []github.PullRequest) Stats {
 				if !pr.MergedAt.IsZero() {
 					hotfixRecords = append(hotfixRecords, hotfixRecord{mergedAt: pr.MergedAt})
 				}
+			}
+
+			// Feature/Story -> release branch lead time
+			if strings.HasPrefix(headLower, "feature/") || strings.HasPrefix(headLower, "story/") {
+				if strings.HasPrefix(baseLower, "release/") && !pr.MergedAt.IsZero() {
+					featureToReleaseCount++
+					featureToReleaseDurations = append(featureToReleaseDurations, pr.MergedAt.Sub(pr.CreatedAt))
+				}
+			}
+
+			// Release branch -> main/master lead time
+			if strings.HasPrefix(headLower, "release/") && (baseLower == "main" || baseLower == "master") && !pr.MergedAt.IsZero() {
+				releaseToMainCount++
+				releaseToMainDurations = append(releaseToMainDurations, pr.MergedAt.Sub(pr.CreatedAt))
+				releaseCount++
+				releaseMergeTimes = append(releaseMergeTimes, pr.MergedAt)
 			}
 		}
 
@@ -456,6 +493,44 @@ func CalculateStats(prs []github.PullRequest) Stats {
 		}
 	}
 
+	// Feature -> release durations
+	avgFeatureToRelease := time.Duration(0)
+	medianFeatureToRelease := time.Duration(0)
+	if len(featureToReleaseDurations) > 0 {
+		var total time.Duration
+		for _, d := range featureToReleaseDurations {
+			total += d
+		}
+		avgFeatureToRelease = total / time.Duration(len(featureToReleaseDurations))
+
+		sort.Slice(featureToReleaseDurations, func(i, j int) bool { return featureToReleaseDurations[i] < featureToReleaseDurations[j] })
+		mid := len(featureToReleaseDurations) / 2
+		if len(featureToReleaseDurations)%2 == 0 {
+			medianFeatureToRelease = (featureToReleaseDurations[mid-1] + featureToReleaseDurations[mid]) / 2
+		} else {
+			medianFeatureToRelease = featureToReleaseDurations[mid]
+		}
+	}
+
+	// Release -> main durations
+	avgReleaseToMain := time.Duration(0)
+	medianReleaseToMain := time.Duration(0)
+	if len(releaseToMainDurations) > 0 {
+		var total time.Duration
+		for _, d := range releaseToMainDurations {
+			total += d
+		}
+		avgReleaseToMain = total / time.Duration(len(releaseToMainDurations))
+
+		sort.Slice(releaseToMainDurations, func(i, j int) bool { return releaseToMainDurations[i] < releaseToMainDurations[j] })
+		mid := len(releaseToMainDurations) / 2
+		if len(releaseToMainDurations)%2 == 0 {
+			medianReleaseToMain = (releaseToMainDurations[mid-1] + releaseToMainDurations[mid]) / 2
+		} else {
+			medianReleaseToMain = releaseToMainDurations[mid]
+		}
+	}
+
 	avgCommitsPerPR := 0.0
 	if numPRs > 0 {
 		avgCommitsPerPR = float64(totalCommits) / numPRs
@@ -604,12 +679,20 @@ func CalculateStats(prs []github.PullRequest) Stats {
 		AverageHotfixAfterRelease:   avgHotfixAfterRelease,
 		MedianHotfixAfterRelease:    medianHotfixAfterRelease,
 		HotfixWithoutReleaseContext: hotfixWithoutRelease,
+		FeatureToReleaseCount:       featureToReleaseCount,
+		AverageFeatureToRelease:     avgFeatureToRelease,
+		MedianFeatureToRelease:      medianFeatureToRelease,
+		ReleaseToMainCount:          releaseToMainCount,
+		AverageReleaseToMain:        avgReleaseToMain,
+		MedianReleaseToMain:         medianReleaseToMain,
 		AverageCommitToPRTime:       avgCommitToPRTime,
 		AverageCommitsPerPR:         avgCommitsPerPR,
 		ForcePushRate:               0.0, // Cannot accurately calculate with current data
 		WIPPRCount:                  openPRs,
 		AverageReviewersPerPR:       avgReviewersPerPR,
 		SelfMergeRate:               selfMergeRate,
+		SelfMergeWithApproval:       selfMergedWithApproval,
+		SelfMergeWithoutApproval:    selfMergedWithoutApproval,
 		MergeTypeTrend:              mergeTypeTrend,
 		CommitFrequencyPerWeek:      commitFrequencyPerWeek,
 		ReopenedPRs:                 reopenedPRs,

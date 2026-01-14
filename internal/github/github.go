@@ -80,7 +80,20 @@ func FetchPullRequests(repo string, since, until, author, label string, includeO
 	}
 
 	// For date ranges, try to split into smaller chunks for parallel processing
-	return fetchPRsWithDateSplit(repo, since, until, author, label, includeOpen)
+	prs, err := fetchPRsWithDateSplit(repo, since, until, author, label, includeOpen)
+	if err != nil {
+		return nil, err
+	}
+
+	// Supplement: fetch merged PRs within date range (mergedAt) to avoid missing old-created PRs
+	if since != "" && until != "" {
+		mergedPRs, err := fetchMergedPRsByRange(repo, since, until)
+		if err == nil && len(mergedPRs) > 0 {
+			prs = append(prs, mergedPRs...)
+		}
+	}
+
+	return deduplicatePRs(prs), nil
 }
 
 // fetchPRsSingle fetches PRs with a single request (for no date filtering)
@@ -570,6 +583,32 @@ func buildPRCommentQuery(owner, repo string, prNumbers []int) string {
 	}`, owner, repo, strings.Join(prQueries, "\n"))
 
 	return query
+}
+
+// fetchMergedPRsByRange fetches merged PRs by mergedAt date range to catch PRs created before the window.
+func fetchMergedPRsByRange(repo, since, until string) ([]PullRequest, error) {
+	args := []string{
+		"pr", "list",
+		"--repo", repo,
+		"--state", "merged",
+		"--json", "number,title,createdAt,mergedAt,closedAt,author,additions,deletions,changedFiles,isDraft,state,mergedBy,reviews,baseRefName,headRefName",
+		"--search", fmt.Sprintf("merged:%s..%s", since, until),
+		"--limit", "1000",
+	}
+
+	cmd := exec.Command("gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh command failed: %s\n%s", err, stderr.String())
+	}
+
+	var prs []PullRequest
+	if err := json.Unmarshal(stdout.Bytes(), &prs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+	return processPRs(prs), nil
 }
 
 // fetchPRReviewCommentCounts fetches review comment counts (excluding replies) using REST API with parallel processing

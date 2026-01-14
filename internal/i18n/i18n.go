@@ -33,8 +33,41 @@ var translations = map[string]map[string]string{
 	"WIP PRs": {
 		"jp": "WIP PR",
 	},
-	"Releases (main/master merges)": {
-		"jp": "リリース回数（main/masterへのマージ）",
+	"Releases (release→main merges)": {
+		"jp": "リリース回数（release→main/master）",
+	},
+	"Release→Main median": {
+		"jp": "Release→Main中央値",
+	},
+	"Feature→Release median": {
+		"jp": "Feature→Release中央値",
+	},
+	"Comparison Metrics:": {
+		"jp": "📊 比較指標:",
+	},
+	"Lead Time avg": {
+		"jp": "リードタイム平均",
+	},
+	"Lead Time median": {
+		"jp": "リードタイム中央値",
+	},
+	"Merge Wait Time avg": {
+		"jp": "レビュー後マージ待ち平均",
+	},
+	"Merge Wait Time median": {
+		"jp": "レビュー後マージ待ち中央値",
+	},
+	"Approval→Merge avg": {
+		"jp": "承認→マージ平均",
+	},
+	"Approval→Merge median": {
+		"jp": "承認→マージ中央値",
+	},
+	"Yearly Trend: %d": {
+		"jp": "📊 年次推移: %d",
+	},
+	"Month": {
+		"jp": "月",
 	},
 	"Reopened PRs": {
 		"jp": "再オープンPR",
@@ -54,8 +87,29 @@ var translations = map[string]map[string]string{
 	"Hotfix w/o prior release": {
 		"jp": "直近リリースなしのHotfix",
 	},
+	"Release Flow Metrics:": {
+		"jp": "🚚 リリースフロー指標:",
+	},
+	"Feature→Release PRs": {
+		"jp": "Feature→Release PR数",
+	},
+	"Feature→Release Time": {
+		"jp": "Feature→Release 時間",
+	},
+	"Release→Main PRs": {
+		"jp": "Release→Main PR数",
+	},
+	"Release→Main Time": {
+		"jp": "Release→Main 時間",
+	},
 	"Stability Metrics:": {
 		"jp": "🛡️ 安定性指標:",
+	},
+	"Stability Metrics (Counts):": {
+		"jp": "🛡️ 安定性指標: 件数",
+	},
+	"Stability Metrics (Durations):": {
+		"jp": "🛡️ 安定性指標: 時間",
 	},
 	"Merge Rate": {
 		"jp": "マージ率",
@@ -140,6 +194,12 @@ var translations = map[string]map[string]string{
 	},
 	"Self-Merge Rate": {
 		"jp": "セルフマージ率",
+	},
+	"Self-Merges (approved)": {
+		"jp": "セルフマージ（承認あり）",
+	},
+	"Self-Merges (no approval)": {
+		"jp": "セルフマージ（承認なし）",
 	},
 	"💬 Code Review Analysis:": {
 		"jp": "💬 コードレビュー分析:",

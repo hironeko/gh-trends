@@ -26,6 +26,10 @@ var label string
 var csvOutput bool
 var lang string
 var langJP bool
+var compareSince string
+var compareUntil string
+var comparePrevYear bool
+var yearTrend string
 
 var rootCmd = &cobra.Command{
 	Use:   "visuche",
@@ -41,6 +45,152 @@ var rootCmd = &cobra.Command{
 		// Traditional argument-based mode
 		runAnalysis()
 	},
+}
+
+func displayComparisonTable(current stats.Stats, compare stats.Stats, curSince, curUntil, compSince, compUntil string) {
+	fmt.Println("\n" + i18n.T("Comparison Metrics:"))
+	labelCur := fmt.Sprintf("%s..%s", curSince, curUntil)
+	labelComp := fmt.Sprintf("%s..%s", compSince, compUntil)
+
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{i18n.T("Metric"), labelCur, labelComp})
+	table.SetBorder(true)
+
+	// Releases
+	table.Append([]string{i18n.T("Releases (release→main merges)"), fmt.Sprintf("%d", current.ReleaseCount), fmt.Sprintf("%d", compare.ReleaseCount)})
+	// Lead time
+	table.Append([]string{i18n.T("Lead Time avg"), formatDuration(current.AverageLeadTime), formatDuration(compare.AverageLeadTime)})
+	table.Append([]string{i18n.T("Lead Time median"), formatDuration(current.MedianLeadTime), formatDuration(compare.MedianLeadTime)})
+	// Merge wait
+	table.Append([]string{i18n.T("Merge Wait Time avg"), formatDuration(current.AverageMergeWaitTime), formatDuration(compare.AverageMergeWaitTime)})
+	table.Append([]string{i18n.T("Merge Wait Time median"), formatDuration(current.MedianMergeWaitTime), formatDuration(compare.MedianMergeWaitTime)})
+	// Approval→Merge
+	table.Append([]string{i18n.T("Approval→Merge avg"), formatDuration(current.AverageApprovalToMerge), formatDuration(compare.AverageApprovalToMerge)})
+	table.Append([]string{i18n.T("Approval→Merge median"), formatDuration(current.MedianApprovalToMerge), formatDuration(compare.MedianApprovalToMerge)})
+	// Feature/Release flow
+	table.Append([]string{i18n.T("Feature→Release PRs"), fmt.Sprintf("%d", current.FeatureToReleaseCount), fmt.Sprintf("%d", compare.FeatureToReleaseCount)})
+	table.Append([]string{i18n.T("Feature→Release avg"), formatDuration(current.AverageFeatureToRelease), formatDuration(compare.AverageFeatureToRelease)})
+	table.Append([]string{i18n.T("Feature→Release median"), formatDuration(current.MedianFeatureToRelease), formatDuration(compare.MedianFeatureToRelease)})
+	table.Append([]string{i18n.T("Release→Main PRs"), fmt.Sprintf("%d", current.ReleaseToMainCount), fmt.Sprintf("%d", compare.ReleaseToMainCount)})
+	table.Append([]string{i18n.T("Release→Main avg"), formatDuration(current.AverageReleaseToMain), formatDuration(compare.AverageReleaseToMain)})
+	table.Append([]string{i18n.T("Release→Main median"), formatDuration(current.MedianReleaseToMain), formatDuration(compare.MedianReleaseToMain)})
+	// Stability
+	table.Append([]string{i18n.T("Reopen Rate"), fmt.Sprintf("%.1f%%", current.ReopenRate), fmt.Sprintf("%.1f%%", compare.ReopenRate)})
+	table.Append([]string{i18n.T("Hotfix Merges"), fmt.Sprintf("%d", current.HotfixMerges), fmt.Sprintf("%d", compare.HotfixMerges)})
+	table.Render()
+}
+
+func runYearlyTrend() {
+	yearInt, err := strconv.Atoi(yearTrend)
+	if err != nil || yearInt < 2000 {
+		fmt.Fprintf(os.Stderr, "Error: invalid --year value\n")
+		os.Exit(1)
+	}
+
+	// Build months
+	type row struct {
+		monthLabel string
+		stats      stats.Stats
+	}
+	var rows []row
+
+	for m := 1; m <= 12; m++ {
+		start := time.Date(yearInt, time.Month(m), 1, 0, 0, 0, 0, time.UTC)
+		end := start.AddDate(0, 1, 0).Add(-time.Nanosecond)
+		s := start.Format("2006-01-02")
+		u := end.Format("2006-01-02")
+		monthlyStats, _, err := fetchStatsForRange(repo, s, u, author, label)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error fetching month %02d: %v\n", m, err)
+			os.Exit(1)
+		}
+		rows = append(rows, row{
+			monthLabel: monthLabel(start, m),
+			stats:      monthlyStats,
+		})
+	}
+
+	// Optional previous year comparison
+	var prevRows []row
+	if comparePrevYear {
+		for m := 1; m <= 12; m++ {
+			start := time.Date(yearInt-1, time.Month(m), 1, 0, 0, 0, 0, time.UTC)
+			end := start.AddDate(0, 1, 0).Add(-time.Nanosecond)
+			s := start.Format("2006-01-02")
+			u := end.Format("2006-01-02")
+			monthlyStats, _, err := fetchStatsForRange(repo, s, u, author, label)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error fetching prev year month %02d: %v\n", m, err)
+				os.Exit(1)
+			}
+			prevRows = append(prevRows, row{
+				monthLabel: start.Format("Jan"),
+				stats:      monthlyStats,
+			})
+		}
+	}
+
+	fmt.Println("\n" + i18n.Sprintf("Yearly Trend: %d", yearInt))
+	table := tablewriter.NewWriter(os.Stdout)
+	if comparePrevYear {
+		table.SetHeader([]string{
+			i18n.T("Month"),
+			i18n.T("Releases (release→main merges)"),
+			"Curr LeadTime", "Prev LeadTime",
+			"Curr Approval→Merge", "Prev Approval→Merge",
+			"Curr Release→Main", "Prev Release→Main",
+			i18n.T("Hotfix Merges"),
+			i18n.T("Revert-like Merges"),
+		})
+		for i, r := range rows {
+			prev := prevRows[i].stats
+			table.Append([]string{
+				r.monthLabel,
+				fmt.Sprintf("%d / %d", r.stats.ReleaseCount, prev.ReleaseCount),
+				formatDuration(r.stats.MedianLeadTime),
+				formatDuration(prev.MedianLeadTime),
+				formatDuration(r.stats.MedianApprovalToMerge),
+				formatDuration(prev.MedianApprovalToMerge),
+				formatDuration(r.stats.MedianReleaseToMain),
+				formatDuration(prev.MedianReleaseToMain),
+				fmt.Sprintf("%d / %d", r.stats.ReleaseToMainCount, prev.ReleaseToMainCount),
+				fmt.Sprintf("%d / %d", r.stats.HotfixMerges, prev.HotfixMerges),
+				fmt.Sprintf("%d / %d", r.stats.RevertLikeMerges, prev.RevertLikeMerges),
+			})
+		}
+	} else {
+		table.SetHeader([]string{
+			i18n.T("Month"),
+			i18n.T("Releases (release→main merges)"),
+			i18n.T("Lead Time median"),
+			i18n.T("Approval→Merge median"),
+			i18n.T("Release→Main median"),
+			i18n.T("Feature→Release median"),
+			i18n.T("Hotfix Merges"),
+			i18n.T("Revert-like Merges"),
+		})
+		for _, r := range rows {
+			table.Append([]string{
+				r.monthLabel,
+				fmt.Sprintf("%d", r.stats.ReleaseCount),
+				formatDuration(r.stats.MedianLeadTime),
+				formatDuration(r.stats.MedianApprovalToMerge),
+				formatDuration(r.stats.MedianReleaseToMain),
+				formatDuration(r.stats.MedianFeatureToRelease),
+				fmt.Sprintf("%d", r.stats.HotfixMerges),
+				fmt.Sprintf("%d", r.stats.RevertLikeMerges),
+			})
+		}
+	}
+	table.SetBorder(true)
+	table.Render()
+}
+
+func monthLabel(t time.Time, m int) string {
+	if i18n.Lang() == "jp" {
+		return fmt.Sprintf("%d月", m)
+	}
+	return t.Format("Jan")
 }
 
 func getTargetRepo() (string, error) {
@@ -92,6 +242,10 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&csvOutput, "csv", false, "Export results to CSV file")
 	rootCmd.PersistentFlags().StringVar(&lang, "lang", "en", "Output language (en/jp)")
 	rootCmd.PersistentFlags().BoolVar(&langJP, "jp", false, "Use Japanese output (shortcut for --lang=jp)")
+	rootCmd.PersistentFlags().StringVar(&compareSince, "compare-since", "", "Compare against another period starting at this date (YYYY-MM-DD)")
+	rootCmd.PersistentFlags().StringVar(&compareUntil, "compare-until", "", "Compare against another period ending at this date (YYYY-MM-DD)")
+	rootCmd.PersistentFlags().BoolVar(&comparePrevYear, "compare-prev-year", false, "Compare against the same period in the previous year")
+	rootCmd.PersistentFlags().StringVar(&yearTrend, "year", "", "Show monthly trend for the given year (YYYY)")
 }
 
 func Execute() {
@@ -144,7 +298,7 @@ func displayStatsTable(statistics stats.Stats) {
 	basicTable.Append([]string{i18n.T("Total PRs"), fmt.Sprintf("%d", statistics.TotalPRs)})
 	basicTable.Append([]string{i18n.T("Merged PRs"), fmt.Sprintf("%d", statistics.MergedPRs)})
 	basicTable.Append([]string{i18n.T("WIP PRs"), fmt.Sprintf("%d", statistics.WIPPRCount)})
-	basicTable.Append([]string{i18n.T("Releases (main/master merges)"), fmt.Sprintf("%d", statistics.ReleaseCount)})
+	basicTable.Append([]string{i18n.T("Releases (release→main merges)"), fmt.Sprintf("%d", statistics.ReleaseCount)})
 	if statistics.TotalPRs > 0 {
 		basicTable.Append([]string{i18n.T("Merge Rate"), fmt.Sprintf("%.1f%%", float64(statistics.MergedPRs)/float64(statistics.TotalPRs)*100)})
 	}
@@ -201,23 +355,58 @@ func displayStatsTable(statistics stats.Stats) {
 	collabTable.SetBorder(true)
 	collabTable.Append([]string{i18n.T("Avg Reviewers per PR"), fmt.Sprintf("%.1f", statistics.AverageReviewersPerPR)})
 	collabTable.Append([]string{i18n.T("Self-Merge Rate"), fmt.Sprintf("%.1f%%", statistics.SelfMergeRate)})
+	collabTable.Append([]string{i18n.T("Self-Merges (approved)"), fmt.Sprintf("%d", statistics.SelfMergeWithApproval)})
+	collabTable.Append([]string{i18n.T("Self-Merges (no approval)"), fmt.Sprintf("%d", statistics.SelfMergeWithoutApproval)})
 	collabTable.Render()
 
+	// Release flow metrics (counts + durations)
+	fmt.Println("\n" + i18n.T("Release Flow Metrics:"))
+	releaseTable := tablewriter.NewWriter(os.Stdout)
+	releaseTable.SetHeader([]string{i18n.T("Metric"), i18n.T("Count"), i18n.T("Average"), i18n.T("Median")})
+	releaseTable.SetBorder(true)
+	releaseTable.Append([]string{
+		i18n.T("Feature→Release PRs"),
+		fmt.Sprintf("%d", statistics.FeatureToReleaseCount),
+		formatDuration(statistics.AverageFeatureToRelease),
+		formatDuration(statistics.MedianFeatureToRelease),
+	})
+	releaseTable.Append([]string{
+		i18n.T("Release→Main PRs"),
+		fmt.Sprintf("%d", statistics.ReleaseToMainCount),
+		formatDuration(statistics.AverageReleaseToMain),
+		formatDuration(statistics.MedianReleaseToMain),
+	})
+	releaseTable.Render()
+
 	// Stability / quality metrics
-	fmt.Println("\n" + i18n.T("Stability Metrics:"))
-	stabilityTable := tablewriter.NewWriter(os.Stdout)
-	stabilityTable.SetHeader([]string{i18n.T("Metric"), i18n.T("Value")})
-	stabilityTable.SetBorder(true)
-	stabilityTable.Append([]string{i18n.T("Reopened PRs"), fmt.Sprintf("%d", statistics.ReopenedPRs)})
-	stabilityTable.Append([]string{i18n.T("Reopen Rate"), fmt.Sprintf("%.1f%%", statistics.ReopenRate)})
-	stabilityTable.Append([]string{i18n.T("Reopen→Merge Time"), fmt.Sprintf("%s / %s", formatDuration(statistics.AverageReopenToMerge), formatDuration(statistics.MedianReopenToMerge))})
-	stabilityTable.Append([]string{i18n.T("Revert-like Merges"), fmt.Sprintf("%d", statistics.RevertLikeMerges)})
-	stabilityTable.Append([]string{i18n.T("Hotfix Merges"), fmt.Sprintf("%d", statistics.HotfixMerges)})
-	stabilityTable.Append([]string{i18n.T("Hotfix→Release Gap (avg/median)"), fmt.Sprintf("%s avg / %s median", formatDuration(statistics.AverageHotfixAfterRelease), formatDuration(statistics.MedianHotfixAfterRelease))})
+	fmt.Println("\n" + i18n.T("Stability Metrics (Counts):"))
+	stabilityCounts := tablewriter.NewWriter(os.Stdout)
+	stabilityCounts.SetHeader([]string{i18n.T("Metric"), i18n.T("Value")})
+	stabilityCounts.SetBorder(true)
+	stabilityCounts.Append([]string{i18n.T("Reopened PRs"), fmt.Sprintf("%d", statistics.ReopenedPRs)})
+	stabilityCounts.Append([]string{i18n.T("Reopen Rate"), fmt.Sprintf("%.1f%%", statistics.ReopenRate)})
+	stabilityCounts.Append([]string{i18n.T("Revert-like Merges"), fmt.Sprintf("%d", statistics.RevertLikeMerges)})
+	stabilityCounts.Append([]string{i18n.T("Hotfix Merges"), fmt.Sprintf("%d", statistics.HotfixMerges)})
 	if statistics.HotfixWithoutReleaseContext > 0 {
-		stabilityTable.Append([]string{i18n.T("Hotfix w/o prior release"), fmt.Sprintf("%d", statistics.HotfixWithoutReleaseContext)})
+		stabilityCounts.Append([]string{i18n.T("Hotfix w/o prior release"), fmt.Sprintf("%d", statistics.HotfixWithoutReleaseContext)})
 	}
-	stabilityTable.Render()
+	stabilityCounts.Render()
+
+	fmt.Println("\n" + i18n.T("Stability Metrics (Durations):"))
+	stabilityDur := tablewriter.NewWriter(os.Stdout)
+	stabilityDur.SetHeader([]string{i18n.T("Metric"), i18n.T("Average"), i18n.T("Median")})
+	stabilityDur.SetBorder(true)
+	stabilityDur.Append([]string{
+		i18n.T("Reopen→Merge Time"),
+		formatDuration(statistics.AverageReopenToMerge),
+		formatDuration(statistics.MedianReopenToMerge),
+	})
+	stabilityDur.Append([]string{
+		i18n.T("Hotfix→Release Gap (avg/median)"),
+		formatDuration(statistics.AverageHotfixAfterRelease),
+		formatDuration(statistics.MedianHotfixAfterRelease),
+	})
+	stabilityDur.Render()
 
 	// Review Comment Analysis (focus on code review comments only)
 	if statistics.PRsWithReviewComments > 0 {
@@ -298,14 +487,19 @@ func formatDuration(d time.Duration) string {
 
 	hours := int(d.Hours())
 	minutes := int(d.Minutes()) % 60
+	days := hours / 24
+	remHours := hours % 24
 
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, remHours, minutes)
+	}
 	if hours > 0 {
 		return fmt.Sprintf("%dh %dm", hours, minutes)
-	} else if minutes > 0 {
-		return fmt.Sprintf("%dm", minutes)
-	} else {
-		return fmt.Sprintf("%.1fs", d.Seconds())
 	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
 // runInteractiveMode runs the interactive mode for repository and date selection
@@ -384,30 +578,49 @@ func runAnalysis() {
 
 	fmt.Printf(i18n.Sprintf("✅ Using repository: %s\n", repo))
 
-	// Fetch pull requests
-	fmt.Println(i18n.T("📥 Fetching pull requests..."))
-	prs, err := github.FetchPullRequests(repo, since, until, author, label, true)
+	// Yearly trend mode
+	if yearTrend != "" {
+		runYearlyTrend()
+		return
+	}
+
+	// Comparison mode
+	if comparePrevYear || compareSince != "" || compareUntil != "" {
+		cSince, cUntil := compareSince, compareUntil
+		if comparePrevYear {
+			if since == "" || until == "" {
+				fmt.Fprintf(os.Stderr, "Error: --compare-prev-year requires --since and --until\n")
+				os.Exit(1)
+			}
+			baseSince, _ := time.Parse("2006-01-02", since)
+			baseUntil, _ := time.Parse("2006-01-02", until)
+			cSince = baseSince.AddDate(-1, 0, 0).Format("2006-01-02")
+			cUntil = baseUntil.AddDate(-1, 0, 0).Format("2006-01-02")
+		}
+
+		curStats, _, err := fetchStatsForRange(repo, since, until, author, label)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error fetching current range: %v\n", err)
+			os.Exit(1)
+		}
+		compStats, _, err := fetchStatsForRange(repo, cSince, cUntil, author, label)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error fetching compare range: %v\n", err)
+			os.Exit(1)
+		}
+		displayComparisonTable(curStats, compStats, since, until, cSince, cUntil)
+		return
+	}
+
+	// Normal mode
+	statistics, processedPRs, err := fetchStatsForRange(repo, since, until, author, label)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching pull requests: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Calculate lead times
-	processedPRs := CalculateLeadTimes(prs)
-
-	// Fetch comment timing data
-	processedPRs = github.FetchPRCommentTiming(repo, processedPRs)
-
-	// Fetch reopen events (for reopen rate / reopen→merge metrics)
-	processedPRs = github.FetchReopenEvents(repo, processedPRs)
-
-	// Calculate stats
-	statistics := stats.CalculateStats(processedPRs)
-
-	// Display stats
 	displayStatsTable(statistics)
 
-	// Output to CSV if requested
 	if csvOutput {
 		repoNameForFile := strings.ReplaceAll(repo, "/", "-")
 		csvFilename := fmt.Sprintf("visuche_%s.csv", repoNameForFile)
@@ -417,6 +630,22 @@ func runAnalysis() {
 		}
 		fmt.Printf("📁 CSV output: %s\n", csvFilename)
 	}
+}
+
+// fetchStatsForRange fetches PRs and computes stats for a given date range.
+func fetchStatsForRange(repo, since, until, author, label string) (stats.Stats, []github.PullRequest, error) {
+	fmt.Println(i18n.T("📥 Fetching pull requests..."))
+	prs, err := github.FetchPullRequests(repo, since, until, author, label, true)
+	if err != nil {
+		return stats.Stats{}, nil, err
+	}
+
+	processedPRs := CalculateLeadTimes(prs)
+	processedPRs = github.FetchPRCommentTiming(repo, processedPRs)
+	processedPRs = github.FetchReopenEvents(repo, processedPRs)
+
+	statistics := stats.CalculateStats(processedPRs)
+	return statistics, processedPRs, nil
 }
 
 // getInteractiveRepo gets repository interactively
