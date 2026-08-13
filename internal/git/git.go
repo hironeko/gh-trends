@@ -3,8 +3,8 @@ package git
 import (
 	"fmt"
 	"os/exec"
-	"strings"
 	"regexp"
+	"strings"
 )
 
 // GetRepoFromGitRemote gets the repository owner/name from the git remote URL.

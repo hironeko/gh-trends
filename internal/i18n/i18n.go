@@ -2,7 +2,7 @@ package i18n
 
 import "fmt"
 
-var currentLang = "en"
+var currentLang = "jp"
 
 // translations maps English source strings to language-specific translations.
 var translations = map[string]map[string]string{
@@ -11,6 +11,9 @@ var translations = map[string]map[string]string{
 	},
 	"📥 Fetching pull requests...": {
 		"jp": "📥 プルリクエストを取得しています...",
+	},
+	"⚠️ No pull requests found for the specified repository and period.": {
+		"jp": "⚠️ 指定したリポジトリと期間に対象のプルリクエストはありません。",
 	},
 	"📊 Pull Request Statistics": {
 		"jp": "📊 プルリクエスト統計",
@@ -75,8 +78,8 @@ var translations = map[string]map[string]string{
 	"Reopen Rate": {
 		"jp": "再オープン率",
 	},
-	"Revert-like Merges": {
-		"jp": "Revert系マージ数",
+	"Reverts to Master": {
+		"jp": "Master向けRevertマージ数",
 	},
 	"Hotfix Merges": {
 		"jp": "Hotfixマージ数",

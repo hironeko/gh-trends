@@ -2,16 +2,16 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/hironeko/gh-trends/internal/csv"
+	"github.com/hironeko/gh-trends/internal/git"
+	"github.com/hironeko/gh-trends/internal/github"
+	"github.com/hironeko/gh-trends/internal/i18n"
+	"github.com/hironeko/gh-trends/internal/stats"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"visuche/internal/csv"
-	"visuche/internal/git"
-	"visuche/internal/github"
-	"visuche/internal/i18n"
-	"visuche/internal/stats"
 
 	"github.com/manifoldco/promptui"
 	"github.com/olekukonko/tablewriter"
@@ -29,12 +29,16 @@ var langJP bool
 var compareSince string
 var compareUntil string
 var comparePrevYear bool
+var compareYear string
 var yearTrend string
 
 var rootCmd = &cobra.Command{
-	Use:   "visuche",
+	Use:   "trends",
 	Short: "A visualization tool for GitHub repository metrics and CI/CD analytics.",
-	Long:  `visuche (visualization check) analyzes GitHub repositories to provide insights on PR metrics, lead times, and CI/CD performance.`,
+	Long:  `RepoTrends analyzes GitHub repositories to show how PR metrics, lead times, release cadence, and CI/CD performance change over time.`,
+	Annotations: map[string]string{
+		cobra.CommandDisplayNameAnnotation: "gh trends",
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		// If no arguments provided, use interactive mode
 		if repo == "" && since == "" && until == "" {
@@ -86,6 +90,17 @@ func runYearlyTrend() {
 		fmt.Fprintf(os.Stderr, "Error: invalid --year value\n")
 		os.Exit(1)
 	}
+	comparisonYear, hasComparison, err := resolveComparisonYear(yearInt, compareYear, comparePrevYear)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	now := time.Now().UTC()
+	monthLimit, partialMonth, err := trendRangeLimit(yearInt, comparisonYear, hasComparison, now)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Build months
 	type row struct {
@@ -94,9 +109,12 @@ func runYearlyTrend() {
 	}
 	var rows []row
 
-	for m := 1; m <= 12; m++ {
+	for m := 1; m <= monthLimit; m++ {
 		start := time.Date(yearInt, time.Month(m), 1, 0, 0, 0, 0, time.UTC)
 		end := start.AddDate(0, 1, 0).Add(-time.Nanosecond)
+		if partialMonth && m == monthLimit {
+			end = comparableMonthEnd(yearInt, time.Month(m), now.Day())
+		}
 		s := start.Format("2006-01-02")
 		u := end.Format("2006-01-02")
 		monthlyStats, _, err := fetchStatsForRange(repo, s, u, author, label)
@@ -110,20 +128,23 @@ func runYearlyTrend() {
 		})
 	}
 
-	// Optional previous year comparison
-	var prevRows []row
-	if comparePrevYear {
-		for m := 1; m <= 12; m++ {
-			start := time.Date(yearInt-1, time.Month(m), 1, 0, 0, 0, 0, time.UTC)
+	// Optional comparison with another year
+	var comparisonRows []row
+	if hasComparison {
+		for m := 1; m <= monthLimit; m++ {
+			start := time.Date(comparisonYear, time.Month(m), 1, 0, 0, 0, 0, time.UTC)
 			end := start.AddDate(0, 1, 0).Add(-time.Nanosecond)
+			if partialMonth && m == monthLimit {
+				end = comparableMonthEnd(comparisonYear, time.Month(m), now.Day())
+			}
 			s := start.Format("2006-01-02")
 			u := end.Format("2006-01-02")
 			monthlyStats, _, err := fetchStatsForRange(repo, s, u, author, label)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error fetching prev year month %02d: %v\n", m, err)
+				fmt.Fprintf(os.Stderr, "Error fetching comparison year %d month %02d: %v\n", comparisonYear, m, err)
 				os.Exit(1)
 			}
-			prevRows = append(prevRows, row{
+			comparisonRows = append(comparisonRows, row{
 				monthLabel: start.Format("Jan"),
 				stats:      monthlyStats,
 			})
@@ -132,30 +153,29 @@ func runYearlyTrend() {
 
 	fmt.Println("\n" + i18n.Sprintf("Yearly Trend: %d", yearInt))
 	table := tablewriter.NewWriter(os.Stdout)
-	if comparePrevYear {
+	if hasComparison {
 		table.SetHeader([]string{
 			i18n.T("Month"),
-			i18n.T("Releases (release→main merges)"),
-			"Curr LeadTime", "Prev LeadTime",
-			"Curr Approval→Merge", "Prev Approval→Merge",
-			"Curr Release→Main", "Prev Release→Main",
-			i18n.T("Hotfix Merges"),
-			i18n.T("Revert-like Merges"),
+			fmt.Sprintf("%s %d/%d", i18n.T("Releases (release→main merges)"), yearInt, comparisonYear),
+			fmt.Sprintf("%d LeadTime", yearInt), fmt.Sprintf("%d LeadTime", comparisonYear),
+			fmt.Sprintf("%d Approval→Merge", yearInt), fmt.Sprintf("%d Approval→Merge", comparisonYear),
+			fmt.Sprintf("%d Release→Main", yearInt), fmt.Sprintf("%d Release→Main", comparisonYear),
+			fmt.Sprintf("%s %d/%d", i18n.T("Hotfix Merges"), yearInt, comparisonYear),
+			fmt.Sprintf("%s %d/%d", i18n.T("Reverts to Master"), yearInt, comparisonYear),
 		})
 		for i, r := range rows {
-			prev := prevRows[i].stats
+			comparison := comparisonRows[i].stats
 			table.Append([]string{
 				r.monthLabel,
-				fmt.Sprintf("%d / %d", r.stats.ReleaseCount, prev.ReleaseCount),
+				fmt.Sprintf("%d / %d", r.stats.ReleaseCount, comparison.ReleaseCount),
 				formatDuration(r.stats.MedianLeadTime),
-				formatDuration(prev.MedianLeadTime),
+				formatDuration(comparison.MedianLeadTime),
 				formatDuration(r.stats.MedianApprovalToMerge),
-				formatDuration(prev.MedianApprovalToMerge),
+				formatDuration(comparison.MedianApprovalToMerge),
 				formatDuration(r.stats.MedianReleaseToMain),
-				formatDuration(prev.MedianReleaseToMain),
-				fmt.Sprintf("%d / %d", r.stats.ReleaseToMainCount, prev.ReleaseToMainCount),
-				fmt.Sprintf("%d / %d", r.stats.HotfixMerges, prev.HotfixMerges),
-				fmt.Sprintf("%d / %d", r.stats.RevertLikeMerges, prev.RevertLikeMerges),
+				formatDuration(comparison.MedianReleaseToMain),
+				fmt.Sprintf("%d / %d", r.stats.HotfixMerges, comparison.HotfixMerges),
+				fmt.Sprintf("%d / %d", r.stats.RevertLikeMerges, comparison.RevertLikeMerges),
 			})
 		}
 	} else {
@@ -167,7 +187,7 @@ func runYearlyTrend() {
 			i18n.T("Release→Main median"),
 			i18n.T("Feature→Release median"),
 			i18n.T("Hotfix Merges"),
-			i18n.T("Revert-like Merges"),
+			i18n.T("Reverts to Master"),
 		})
 		for _, r := range rows {
 			table.Append([]string{
@@ -184,6 +204,45 @@ func runYearlyTrend() {
 	}
 	table.SetBorder(true)
 	table.Render()
+}
+
+func resolveComparisonYear(year int, requested string, previous bool) (int, bool, error) {
+	if requested != "" && previous {
+		return 0, false, fmt.Errorf("--compare-year and --compare-prev-year cannot be used together")
+	}
+	if requested == "" {
+		if previous {
+			return year - 1, true, nil
+		}
+		return 0, false, nil
+	}
+
+	comparison, err := strconv.Atoi(requested)
+	if err != nil || comparison < 2000 {
+		return 0, false, fmt.Errorf("invalid --compare-year value")
+	}
+	if comparison == year {
+		return 0, false, fmt.Errorf("--compare-year must differ from --year")
+	}
+	return comparison, true, nil
+}
+
+func trendRangeLimit(year, comparisonYear int, hasComparison bool, now time.Time) (int, bool, error) {
+	if year > now.Year() || (hasComparison && comparisonYear > now.Year()) {
+		return 0, false, fmt.Errorf("yearly trends cannot include a future year")
+	}
+	if year == now.Year() || (hasComparison && comparisonYear == now.Year()) {
+		return int(now.Month()), true, nil
+	}
+	return 12, false, nil
+}
+
+func comparableMonthEnd(year int, month time.Month, day int) time.Time {
+	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	if day > lastDay {
+		day = lastDay
+	}
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 func monthLabel(t time.Time, m int) string {
@@ -240,11 +299,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&author, "author", "", "Filter PRs by author username")
 	rootCmd.PersistentFlags().StringVar(&label, "label", "", "Filter PRs by label name")
 	rootCmd.PersistentFlags().BoolVar(&csvOutput, "csv", false, "Export results to CSV file")
-	rootCmd.PersistentFlags().StringVar(&lang, "lang", "en", "Output language (en/jp)")
+	rootCmd.PersistentFlags().StringVar(&lang, "lang", "jp", "Output language (jp/en)")
 	rootCmd.PersistentFlags().BoolVar(&langJP, "jp", false, "Use Japanese output (shortcut for --lang=jp)")
 	rootCmd.PersistentFlags().StringVar(&compareSince, "compare-since", "", "Compare against another period starting at this date (YYYY-MM-DD)")
 	rootCmd.PersistentFlags().StringVar(&compareUntil, "compare-until", "", "Compare against another period ending at this date (YYYY-MM-DD)")
 	rootCmd.PersistentFlags().BoolVar(&comparePrevYear, "compare-prev-year", false, "Compare against the same period in the previous year")
+	rootCmd.PersistentFlags().StringVar(&compareYear, "compare-year", "", "Compare monthly trends against another year (requires --year)")
 	rootCmd.PersistentFlags().StringVar(&yearTrend, "year", "", "Show monthly trend for the given year (YYYY)")
 }
 
@@ -385,7 +445,7 @@ func displayStatsTable(statistics stats.Stats) {
 	stabilityCounts.SetBorder(true)
 	stabilityCounts.Append([]string{i18n.T("Reopened PRs"), fmt.Sprintf("%d", statistics.ReopenedPRs)})
 	stabilityCounts.Append([]string{i18n.T("Reopen Rate"), fmt.Sprintf("%.1f%%", statistics.ReopenRate)})
-	stabilityCounts.Append([]string{i18n.T("Revert-like Merges"), fmt.Sprintf("%d", statistics.RevertLikeMerges)})
+	stabilityCounts.Append([]string{i18n.T("Reverts to Master"), fmt.Sprintf("%d", statistics.RevertLikeMerges)})
 	stabilityCounts.Append([]string{i18n.T("Hotfix Merges"), fmt.Sprintf("%d", statistics.HotfixMerges)})
 	if statistics.HotfixWithoutReleaseContext > 0 {
 		stabilityCounts.Append([]string{i18n.T("Hotfix w/o prior release"), fmt.Sprintf("%d", statistics.HotfixWithoutReleaseContext)})
@@ -458,10 +518,6 @@ func displayStatsTable(statistics stats.Stats) {
 		// Show a message when no review comments are found
 		fmt.Println("\n" + i18n.T("💬 Code Review Analysis:"))
 		fmt.Printf(i18n.Sprintf("📝 No code review comments found in this period (%d PRs analyzed)", statistics.TotalPRs) + "\n")
-		fmt.Printf(i18n.T("💡 This could indicate:") + "\n")
-		fmt.Printf(i18n.T("   • Code quality is consistently high") + "\n")
-		fmt.Printf(i18n.T("   • Team does reviews via other channels") + "\n")
-		fmt.Printf(i18n.T("   • PRs are small and self-explanatory") + "\n")
 	}
 
 	// Merge Type Statistics Table
@@ -504,7 +560,7 @@ func formatDuration(d time.Duration) string {
 
 // runInteractiveMode runs the interactive mode for repository and date selection
 func runInteractiveMode() {
-	fmt.Println("🎯 Welcome to visuche - Interactive GitHub Analytics")
+	fmt.Println("🎯 Welcome to RepoTrends - Interactive GitHub Analytics")
 	fmt.Println("=" + strings.Repeat("=", 50))
 
 	// Step 1: Repository selection
@@ -575,6 +631,15 @@ func runAnalysis() {
 		os.Exit(1)
 	}
 	repo = targetRepo
+	if compareYear != "" && yearTrend == "" {
+		fmt.Fprintln(os.Stderr, "Error: --compare-year requires --year")
+		os.Exit(1)
+	}
+
+	if err := github.ValidateRepository(repo); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf(i18n.Sprintf("✅ Using repository: %s\n", repo))
 
@@ -618,12 +683,16 @@ func runAnalysis() {
 		fmt.Fprintf(os.Stderr, "Error fetching pull requests: %v\n", err)
 		os.Exit(1)
 	}
+	if len(processedPRs) == 0 {
+		fmt.Println(i18n.T("⚠️ No pull requests found for the specified repository and period."))
+		return
+	}
 
 	displayStatsTable(statistics)
 
 	if csvOutput {
 		repoNameForFile := strings.ReplaceAll(repo, "/", "-")
-		csvFilename := fmt.Sprintf("visuche_%s.csv", repoNameForFile)
+		csvFilename := fmt.Sprintf("repo-trends_%s.csv", repoNameForFile)
 		if err := csv.WritePullRequestsToCSV(csvFilename, processedPRs); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing CSV: %v\n", err)
 			os.Exit(1)
@@ -641,6 +710,9 @@ func fetchStatsForRange(repo, since, until, author, label string) (stats.Stats, 
 	}
 
 	processedPRs := CalculateLeadTimes(prs)
+	if len(processedPRs) == 0 {
+		return stats.Stats{}, processedPRs, nil
+	}
 	processedPRs = github.FetchPRCommentTiming(repo, processedPRs)
 	processedPRs = github.FetchReopenEvents(repo, processedPRs)
 

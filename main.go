@@ -1,6 +1,6 @@
 package main
 
-import "visuche/cmd"
+import "github.com/hironeko/gh-trends/cmd"
 
 func main() {
 	cmd.Execute()

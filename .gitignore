@@ -4,8 +4,12 @@
 *.dll
 *.so
 *.dylib
-visuche
-visuche_*
+/gh-trends
+repo-trends_*
+# Legacy local binaries from earlier names
+/gh-reporhythm
+/reporhythm
+/visuche
 
 # Test binary, built with `go test -c`
 *.test
@@ -37,7 +41,7 @@ Thumbs.db
 
 # CSV output files
 *.csv
-visuche_*.csv
+repo-trends_*.csv
 
 # Log files
 *.log

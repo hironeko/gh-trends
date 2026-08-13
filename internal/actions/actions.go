@@ -4,28 +4,28 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/hironeko/gh-trends/internal/animation"
 	"os/exec"
 	"sync"
 	"time"
-	"visuche/internal/animation"
 )
 
 // WorkflowRun represents a GitHub Actions workflow run
 type WorkflowRun struct {
-	Attempt       int       `json:"attempt"`
-	Conclusion    string    `json:"conclusion"`
-	CreatedAt     time.Time `json:"createdAt"`
-	DatabaseId    int64     `json:"databaseId"`
-	DisplayTitle  string    `json:"displayTitle"`
-	Event         string    `json:"event"`
-	HeadBranch    string    `json:"headBranch"`
-	Name          string    `json:"name"`
-	Number        int       `json:"number"`
-	StartedAt     time.Time `json:"startedAt"`
-	Status        string    `json:"status"`
-	UpdatedAt     time.Time `json:"updatedAt"`
-	WorkflowName  string    `json:"workflowName"`
-	URL           string    `json:"url"`
+	Attempt      int       `json:"attempt"`
+	Conclusion   string    `json:"conclusion"`
+	CreatedAt    time.Time `json:"createdAt"`
+	DatabaseId   int64     `json:"databaseId"`
+	DisplayTitle string    `json:"displayTitle"`
+	Event        string    `json:"event"`
+	HeadBranch   string    `json:"headBranch"`
+	Name         string    `json:"name"`
+	Number       int       `json:"number"`
+	StartedAt    time.Time `json:"startedAt"`
+	Status       string    `json:"status"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	WorkflowName string    `json:"workflowName"`
+	URL          string    `json:"url"`
 }
 
 // WorkflowJob represents a job within a workflow run
@@ -78,13 +78,13 @@ type FailureDetail struct {
 
 // WorkflowAnalytics represents the complete analysis results
 type WorkflowAnalytics struct {
-	TotalRuns          int
-	TotalSuccesses     int
-	TotalFailures      int
-	AverageDurationMs  int64
-	WorkflowStats      map[string]WorkflowStats
-	EventStats         map[string]EventStats
-	FailureDetails     []FailureDetail
+	TotalRuns         int
+	TotalSuccesses    int
+	TotalFailures     int
+	AverageDurationMs int64
+	WorkflowStats     map[string]WorkflowStats
+	EventStats        map[string]EventStats
+	FailureDetails    []FailureDetail
 }
 
 // FetchWorkflowRuns fetches workflow runs from GitHub using gh CLI
@@ -106,7 +106,7 @@ func FetchWorkflowRuns(repo string, since, until string) ([]WorkflowRun, error) 
 	defer spinner.Stop()
 
 	cmd := exec.Command("gh", args...)
-	
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -129,26 +129,26 @@ func AnalyzeWorkflowRuns(runs []WorkflowRun, since, until string) WorkflowAnalyt
 	var filteredRuns []WorkflowRun
 	for _, run := range runs {
 		include := true
-		
+
 		if since != "" {
 			sinceDate, err := time.Parse("2006-01-02", since)
 			if err == nil && run.CreatedAt.Before(sinceDate) {
 				include = false
 			}
 		}
-		
+
 		if until != "" && include {
 			untilDate, err := time.Parse("2006-01-02", until)
 			if err == nil && run.CreatedAt.After(untilDate.AddDate(0, 0, 1)) { // Add 1 day to include the until date
 				include = false
 			}
 		}
-		
+
 		if include {
 			filteredRuns = append(filteredRuns, run)
 		}
 	}
-	
+
 	runs = filteredRuns
 	analytics := WorkflowAnalytics{
 		WorkflowStats:  make(map[string]WorkflowStats),
@@ -174,7 +174,7 @@ func AnalyzeWorkflowRuns(runs []WorkflowRun, since, until string) WorkflowAnalyt
 			analytics.TotalSuccesses++
 		} else if run.Conclusion == "failure" || run.Conclusion == "cancelled" || run.Conclusion == "timed_out" {
 			analytics.TotalFailures++
-			
+
 			// Add to failure details
 			failureDetail := FailureDetail{
 				WorkflowName: run.WorkflowName,
@@ -182,42 +182,42 @@ func AnalyzeWorkflowRuns(runs []WorkflowRun, since, until string) WorkflowAnalyt
 				CreatedAt:    run.CreatedAt,
 				URL:          run.URL,
 			}
-			
+
 			if !run.StartedAt.IsZero() && !run.UpdatedAt.IsZero() {
 				failureDetail.Duration = run.UpdatedAt.Sub(run.StartedAt)
 			}
-			
+
 			analytics.FailureDetails = append(analytics.FailureDetails, failureDetail)
 		}
 
 		// Update workflow statistics
 		workflowStats := analytics.WorkflowStats[run.WorkflowName]
 		workflowStats.TotalRuns++
-		
+
 		if run.Conclusion == "success" {
 			workflowStats.Successes++
 		} else if run.Conclusion == "failure" || run.Conclusion == "cancelled" || run.Conclusion == "timed_out" {
 			workflowStats.Failures++
 		}
-		
+
 		if run.Status == "completed" && !run.StartedAt.IsZero() && !run.UpdatedAt.IsZero() {
 			duration := run.UpdatedAt.Sub(run.StartedAt)
 			// Update average duration (simple approach)
 			workflowStats.AverageDurationMs = (workflowStats.AverageDurationMs + duration.Milliseconds()) / 2
 		}
-		
+
 		analytics.WorkflowStats[run.WorkflowName] = workflowStats
 
 		// Update event statistics
 		eventStats := analytics.EventStats[run.Event]
 		eventStats.TotalRuns++
-		
+
 		if run.Conclusion == "success" {
 			eventStats.Successes++
 		} else if run.Conclusion == "failure" || run.Conclusion == "cancelled" || run.Conclusion == "timed_out" {
 			eventStats.Failures++
 		}
-		
+
 		analytics.EventStats[run.Event] = eventStats
 	}
 
@@ -249,24 +249,24 @@ func fetchFailureDetails(runs []WorkflowRun, failures []FailureDetail) []Failure
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			
+
 			// Find the corresponding run
 			var targetRun *WorkflowRun
 			for _, run := range runs {
-				if run.DisplayTitle == failures[index].DisplayTitle && 
-				   run.WorkflowName == failures[index].WorkflowName {
+				if run.DisplayTitle == failures[index].DisplayTitle &&
+					run.WorkflowName == failures[index].WorkflowName {
 					targetRun = &run
 					break
 				}
 			}
-			
+
 			if targetRun == nil {
 				return
 			}
 
 			// Fetch job details
 			jobInfo := fetchJobDetails(targetRun.DatabaseId)
-			
+
 			mu.Lock()
 			if jobInfo.FailedJob != "" {
 				failures[index].FailedJob = jobInfo.FailedJob
@@ -296,7 +296,7 @@ func fetchJobDetails(runId int64) JobInfo {
 	}
 
 	cmd := exec.Command("gh", args...)
-	
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -309,7 +309,7 @@ func fetchJobDetails(runId int64) JobInfo {
 	var runDetails struct {
 		Jobs []WorkflowJob `json:"jobs"`
 	}
-	
+
 	if err := json.Unmarshal(stdout.Bytes(), &runDetails); err != nil {
 		return JobInfo{}
 	}
@@ -318,7 +318,7 @@ func fetchJobDetails(runId int64) JobInfo {
 	for _, job := range runDetails.Jobs {
 		if job.Conclusion == "failure" || job.Conclusion == "cancelled" || job.Conclusion == "timed_out" {
 			jobInfo := JobInfo{FailedJob: job.Name}
-			
+
 			// Find failed step
 			for _, step := range job.Steps {
 				if step.Conclusion == "failure" || step.Conclusion == "cancelled" || step.Conclusion == "timed_out" {
@@ -326,7 +326,7 @@ func fetchJobDetails(runId int64) JobInfo {
 					break
 				}
 			}
-			
+
 			return jobInfo
 		}
 	}

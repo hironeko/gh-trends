@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/hironeko/gh-trends/internal/animation"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"visuche/internal/animation"
 )
 
 // PullRequest represents a GitHub Pull Request.
@@ -72,6 +72,22 @@ type PullRequest struct {
 	FirstReopenedAt time.Time `json:"-"`
 }
 
+// ValidateRepository verifies that the repository exists and is accessible to
+// the account currently authenticated with GitHub CLI.
+func ValidateRepository(repo string) error {
+	cmd := exec.Command("gh", "repo", "view", repo, "--json", "nameWithOwner")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("repository %q was not found or is not accessible: %s", repo, detail)
+	}
+	return nil
+}
+
 // FetchPullRequests fetches pull requests from GitHub using gh pr list command with time-based parallel fetching.
 func FetchPullRequests(repo string, since, until, author, label string, includeOpen bool) ([]PullRequest, error) {
 	// If no date range is specified, use a simple single request
@@ -87,13 +103,15 @@ func FetchPullRequests(repo string, since, until, author, label string, includeO
 
 	// Supplement: fetch merged PRs within date range (mergedAt) to avoid missing old-created PRs
 	if since != "" && until != "" {
-		mergedPRs, err := fetchMergedPRsByRange(repo, since, until)
+		mergedPRs, err := fetchMergedPRsByRange(repo, since, until, author, label)
 		if err == nil && len(mergedPRs) > 0 {
 			prs = append(prs, mergedPRs...)
 		}
 	}
 
-	return deduplicatePRs(prs), nil
+	// Apply the exclusion after combining every fetch path so Dependabot PRs
+	// supplemented by mergedAt cannot be reintroduced.
+	return filterDependabotPRs(deduplicatePRs(prs)), nil
 }
 
 // fetchPRsSingle fetches PRs with a single request (for no date filtering)
@@ -586,15 +604,8 @@ func buildPRCommentQuery(owner, repo string, prNumbers []int) string {
 }
 
 // fetchMergedPRsByRange fetches merged PRs by mergedAt date range to catch PRs created before the window.
-func fetchMergedPRsByRange(repo, since, until string) ([]PullRequest, error) {
-	args := []string{
-		"pr", "list",
-		"--repo", repo,
-		"--state", "merged",
-		"--json", "number,title,createdAt,mergedAt,closedAt,author,additions,deletions,changedFiles,isDraft,state,mergedBy,reviews,baseRefName,headRefName",
-		"--search", fmt.Sprintf("merged:%s..%s", since, until),
-		"--limit", "1000",
-	}
+func fetchMergedPRsByRange(repo, since, until, author, label string) ([]PullRequest, error) {
+	args := buildMergedPRArgs(repo, since, until, author, label)
 
 	cmd := exec.Command("gh", args...)
 	var stdout, stderr bytes.Buffer
@@ -609,6 +620,24 @@ func fetchMergedPRsByRange(repo, since, until string) ([]PullRequest, error) {
 		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 	return processPRs(prs), nil
+}
+
+func buildMergedPRArgs(repo, since, until, author, label string) []string {
+	args := []string{
+		"pr", "list",
+		"--repo", repo,
+		"--state", "merged",
+		"--json", "number,title,createdAt,mergedAt,closedAt,author,additions,deletions,changedFiles,isDraft,state,mergedBy,reviews,baseRefName,headRefName",
+		"--search", fmt.Sprintf("merged:%s..%s", since, until),
+		"--limit", "1000",
+	}
+	if author != "" {
+		args = append(args, "--author", author)
+	}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	return args
 }
 
 // fetchPRReviewCommentCounts fetches review comment counts (excluding replies) using REST API with parallel processing
@@ -762,30 +791,26 @@ func processPRs(prs []PullRequest) []PullRequest {
 	return prs
 }
 
-// filterDependabotPRs drops PRs authored by dependabot to avoid skewing release/PR metrics.
+// filterDependabotPRs drops Dependabot PRs to avoid skewing release/PR metrics.
 func filterDependabotPRs(prs []PullRequest) []PullRequest {
 	filtered := make([]PullRequest, 0, len(prs))
 	for _, pr := range prs {
-		login := strings.ToLower(pr.Author.Login)
-		head := strings.ToLower(pr.HeadRefName)
-		title := strings.ToLower(pr.Title)
-		// GitHub apps sometimes appear as "dependabot", "dependabot[bot]", "app/dependabot",
-		// or generic bot accounts ending with "[bot]".
-		if login != "" &&
-			(strings.HasPrefix(login, "dependabot") ||
-				strings.Contains(login, "dependabot") ||
-				strings.HasSuffix(login, "[bot]")) {
-			continue
-		}
-		if head != "" && strings.HasPrefix(head, "dependabot") {
-			continue
-		}
-		if title != "" && strings.Contains(title, "dependabot") {
+		if isDependabotPR(pr) {
 			continue
 		}
 		filtered = append(filtered, pr)
 	}
 	return filtered
+}
+
+func isDependabotPR(pr PullRequest) bool {
+	login := strings.ToLower(strings.TrimSpace(pr.Author.Login))
+	head := strings.ToLower(strings.TrimSpace(pr.HeadRefName))
+
+	// The author is normally "dependabot[bot]". Keep compatibility with
+	// Dependabot Preview and GitHub App login representations as well.
+	return strings.Contains(login, "dependabot") ||
+		strings.HasPrefix(head, "dependabot/")
 }
 
 // deduplicatePRs removes duplicate pull requests by PR number, keeping the most recent occurrence.

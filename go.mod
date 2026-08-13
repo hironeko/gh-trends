@@ -1,4 +1,4 @@
-module visuche
+module github.com/hironeko/gh-trends
 
 go 1.21.5
 

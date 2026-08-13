@@ -1,46 +1,47 @@
-.PHONY: build install uninstall clean help
+.PHONY: build install uninstall clean help test
 
-# Default target
+LOCAL_EXTENSION_DIR := local/gh-trends
+
 help:
-	@echo "visuche - GitHub Repository Analytics Tool"
+	@echo "RepoTrends - GitHub Repository Analytics Extension"
 	@echo ""
 	@echo "Available commands:"
-	@echo "  make build     - Build the binary"
-	@echo "  make install   - Build and install to ~/bin"
-	@echo "  make uninstall - Remove from ~/bin"
+	@echo "  make build     - Build gh-trends"
+	@echo "  make install   - Install as a local gh extension"
+	@echo "  make uninstall - Remove the gh extension"
+	@echo "  make test      - Run all tests"
 	@echo "  make clean     - Clean build artifacts"
-	@echo "  make help      - Show this help"
 
-# Build the binary
 build:
-	@echo "🔨 Building visuche..."
-	go build -ldflags="-s -w" -o visuche
+	@echo "🔨 Building RepoTrends..."
+	go build -ldflags="-s -w" -o gh-trends
 
-# Install to ~/bin
 install: build
-	@echo "📦 Installing visuche to ~/bin..."
-	@mkdir -p ~/bin
-	@cp visuche ~/bin/
-	@echo "✅ visuche installed successfully!"
-	@echo "💡 Make sure ~/bin is in your PATH:"
-	@echo "   export PATH=\"\$$HOME/bin:\$$PATH\""
-	@echo ""
-	@echo "🎯 You can now run: visuche"
+	@echo "📦 Installing RepoTrends as a GitHub CLI extension..."
+	@mkdir -p $(LOCAL_EXTENSION_DIR)
+	@cp gh-trends $(LOCAL_EXTENSION_DIR)/gh-trends
+	@git -C $(LOCAL_EXTENSION_DIR) init -q
+	@gh extension remove reporhythm >/dev/null 2>&1 || true
+	@gh extension remove trends >/dev/null 2>&1 || true
+	@cd $(LOCAL_EXTENSION_DIR) && gh extension install .
+	@echo "✅ RepoTrends installed successfully!"
+	@echo "🎯 You can now run: gh trends"
 
-# Uninstall from ~/bin
 uninstall:
-	@echo "🗑️  Removing visuche from ~/bin..."
-	@rm -f ~/bin/visuche
-	@echo "✅ visuche uninstalled successfully!"
+	@echo "🗑️  Removing the RepoTrends GitHub CLI extension..."
+	@gh extension remove trends
+	@echo "✅ RepoTrends uninstalled successfully!"
 
-# Clean build artifacts
+test:
+	go test ./...
+
 clean:
 	@echo "🧹 Cleaning build artifacts..."
-	@rm -f visuche
+	@rm -f gh-trends
+	@rm -f $(LOCAL_EXTENSION_DIR)/gh-trends
 	@rm -f *.csv
 	@echo "✅ Clean complete!"
 
-# Development build with verbose output
 dev-build:
-	@echo "🔨 Building visuche (development mode)..."
-	go build -v -o visuche
+	@echo "🔨 Building RepoTrends (development mode)..."
+	go build -v -o gh-trends

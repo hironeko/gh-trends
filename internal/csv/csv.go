@@ -3,9 +3,9 @@ package csv
 import (
 	"encoding/csv"
 	"fmt"
+	"github.com/hironeko/gh-trends/internal/github"
 	"os"
 	"time"
-	"visuche/internal/github"
 )
 
 // WritePullRequestsToCSV writes a slice of PullRequests to a CSV file.

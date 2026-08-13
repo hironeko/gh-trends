@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/hironeko/gh-trends/internal/actions"
+	"github.com/hironeko/gh-trends/internal/git"
+	"github.com/hironeko/gh-trends/internal/i18n"
 	"os"
 	"strings"
 	"time"
-	"visuche/internal/actions"
-	"visuche/internal/git"
-	"visuche/internal/i18n"
 
 	"github.com/manifoldco/promptui"
 	"github.com/olekukonko/tablewriter"

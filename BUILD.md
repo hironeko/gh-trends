@@ -1,111 +1,56 @@
-# Build and Installation Instructions
+# Build and installation
 
-## Prerequisites
+## Requirements
 
-- Go 1.19 or later
-- GitHub CLI (`gh`) - for API access
-- Git (for repository detection)
+- GitHub CLI (`gh`)
+- An authenticated GitHub CLI session for private repositories
+- Go 1.21 or later for source builds
 
-## Quick Install (Recommended)
+## Install a released version
 
-### Option 1: Automated Install Script
 ```bash
-chmod +x install.sh
-./install.sh
+gh extension install hironeko/gh-trends
 ```
 
-This script will:
-- Check for Go and GitHub CLI
-- Install GitHub CLI via Homebrew if missing
-- Build the binary with optimizations
-- Install to `~/bin/`
-- Configure your PATH automatically
+Run it with:
 
-### Option 2: Manual Build with Makefile
 ```bash
-# Build only
-make build
+gh trends --help
+```
 
-# Build and install
+Upgrade or remove it with:
+
+```bash
+gh extension upgrade trends
+gh extension remove trends
+```
+
+## Local development installation
+
+```bash
+git clone git@github.com:hironeko/gh-trends.git
+cd gh-trends
 make install
-
-# Show help
-make help
+gh trends --help
 ```
 
-## Manual Installation
+`make install` builds `gh-trends`, stages it under `local/gh-trends`,
+and installs that directory as a local extension. Run `make install` again after
+source changes.
 
-If you prefer manual installation:
+## Tests
 
 ```bash
-# 1. Build the binary
-go build -ldflags="-s -w" -o visuche
-
-# 2. Move to your PATH
-mkdir -p ~/bin
-cp visuche ~/bin/
-chmod +x ~/bin/visuche
-
-# 3. Add ~/bin to PATH (if not already)
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
-source ~/.zshrc  # or ~/.bashrc
+make test
 ```
 
-## Usage
+## Releases
 
-After installation:
+Push a semantic version tag. The release workflow uses GitHub's official
+`cli/gh-extension-precompile` action to publish binaries recognized by
+`gh extension install`.
 
 ```bash
-# Interactive mode (recommended for first use)
-visuche
-
-# Direct analysis
-visuche --repo owner/repo
-
-# With time period
-visuche --repo owner/repo --since 2024-01-01 --until 2024-01-31
-
-# Export to CSV
-visuche --repo owner/repo --csv
-
-# Show help
-visuche --help
+git tag v0.1.0
+git push origin v0.1.0
 ```
-
-## GitHub Authentication
-
-Before first use, authenticate with GitHub:
-
-```bash
-gh auth login
-```
-
-Choose "GitHub.com" and follow the prompts to authenticate via web browser.
-
-## Uninstall
-
-```bash
-# Using Makefile
-make uninstall
-
-# Manual removal
-rm ~/bin/visuche
-```
-
-## Development
-
-For development builds:
-
-```bash
-# Development build with verbose output
-make dev-build
-
-# Clean build artifacts
-make clean
-```
-
-## Troubleshooting
-
-**Command not found**: Ensure `~/bin` is in your PATH
-**Authentication errors**: Run `gh auth login` to authenticate with GitHub
-**Build errors**: Ensure Go 1.19+ is installed and GOPATH is configured

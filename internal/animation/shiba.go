@@ -10,7 +10,24 @@ import (
 var (
 	globalSpinnerMutex sync.Mutex
 	activeSpinner      *ShibaSpinner
+	spinnersSuppressed bool
 )
+
+// SuppressSpinners disables the animated dog spinner until the returned
+// restore function is called. This is useful when progress is rendered by a
+// different UI, such as the local dashboard.
+func SuppressSpinners() func() {
+	globalSpinnerMutex.Lock()
+	previous := spinnersSuppressed
+	spinnersSuppressed = true
+	globalSpinnerMutex.Unlock()
+
+	return func() {
+		globalSpinnerMutex.Lock()
+		spinnersSuppressed = previous
+		globalSpinnerMutex.Unlock()
+	}
+}
 
 // ShibaFrames contains running animation frames
 var ShibaFrames = []string{
@@ -29,7 +46,7 @@ var DetailedShibaFrames = []string{
      ∪─▲─∪      
     ╱       ╲     
    (  )   (  )    `,
-	
+
 	// Frame 2 - Mid-run, legs different
 	`     ∩───∩
     (  ◕   ◕  )  Fetching data...
@@ -37,7 +54,7 @@ var DetailedShibaFrames = []string{
       ∪─▲─∪     
      ╱       ╲    
     (  ) (  )     `,
-	
+
 	// Frame 3 - Running right
 	`      ∩───∩
      (  ◕   ◕  ) Fetching data...
@@ -45,7 +62,7 @@ var DetailedShibaFrames = []string{
        ∪─▲─∪    
       ╱       ╲   
      (  )   (  )  `,
-	
+
 	// Frame 4 - Mid-run
 	`       ∩───∩
       (  ◕   ◕  )Fetching data...
@@ -69,7 +86,7 @@ func NewShibaSpinner(message string, useDetailed bool) *ShibaSpinner {
 	if useDetailed {
 		frames = DetailedShibaFrames
 	}
-	
+
 	return &ShibaSpinner{
 		frames:   frames,
 		delay:    300 * time.Millisecond,
@@ -81,18 +98,22 @@ func NewShibaSpinner(message string, useDetailed bool) *ShibaSpinner {
 // Start begins the animation in a separate goroutine
 func (s *ShibaSpinner) Start() {
 	globalSpinnerMutex.Lock()
+	if spinnersSuppressed {
+		globalSpinnerMutex.Unlock()
+		return
+	}
 	if activeSpinner != nil {
 		activeSpinner.Stop()
 	}
 	activeSpinner = s
 	globalSpinnerMutex.Unlock()
-	
+
 	go func() {
 		frameIndex := 0
-		
+
 		// Hide cursor
 		fmt.Print("\033[?25l")
-		
+
 		for {
 			select {
 			case <-s.stopChan:
@@ -107,7 +128,7 @@ func (s *ShibaSpinner) Start() {
 			default:
 				// Simple line replacement for all cases
 				fmt.Printf("\033[2K\r%s%s", s.frames[frameIndex], s.message)
-				
+
 				frameIndex = (frameIndex + 1) % len(s.frames)
 				time.Sleep(s.delay)
 			}

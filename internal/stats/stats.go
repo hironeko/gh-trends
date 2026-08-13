@@ -1,10 +1,10 @@
 package stats
 
 import (
+	"github.com/hironeko/gh-trends/internal/github"
 	"sort"
 	"strings"
 	"time"
-	"visuche/internal/github"
 )
 
 // Stats holds the calculated statistics.
@@ -289,9 +289,9 @@ func CalculateStats(prs []github.PullRequest) Stats {
 				mergeTypeCounts["rebase/other"]++
 			}
 
-			// Revert-like detection (title heuristic)
+			// Revert-to-master detection (title heuristic)
 			titleLower := strings.ToLower(pr.Title)
-			if strings.Contains(titleLower, "revert") {
+			if baseLower == "master" && strings.Contains(titleLower, "revert") {
 				revertLikeMerges++
 			}
 
