@@ -12,12 +12,31 @@ import (
 )
 
 func testDashboardReport() *dashboardReport {
-	comparison := dashboardMetric{PRs: 8, Releases: 1, LeadTime: "3h 0m"}
+	comparison := dashboardMetric{PRs: 8, MergedPRs: 6, Releases: 1, LeadTime: "3h 0m"}
 	return &dashboardReport{
 		Repository: "owner/repo", Author: "octocat", Year: 2026, ComparisonYear: 2025,
 		PrimaryLabel: "2026", ComparisonLabel: "2025",
 		GeneratedAt: "2026-08-13T00:00:00Z",
-		Rows:        []dashboardRow{{Month: 1, Label: "2026/01", ComparisonLabel: "2025/01", Primary: dashboardMetric{PRs: 10, Releases: 2, LeadTime: "2h 0m"}, Comparison: &comparison}},
+		Rows:        []dashboardRow{{Month: 1, Label: "2026/01", ComparisonLabel: "2025/01", Primary: dashboardMetric{PRs: 10, MergedPRs: 9, Releases: 2, LeadTime: "2h 0m"}, Comparison: &comparison}},
+	}
+}
+
+func TestDashboardPeriodPRsSeparatesOpenedAndMergedCohorts(t *testing.T) {
+	start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, time.August, 31, 23, 59, 59, 0, time.UTC)
+	prs := []github.PullRequest{
+		{Number: 1, CreatedAt: time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC), Merged: true, MergedAt: time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)},
+		{Number: 2, CreatedAt: time.Date(2026, time.July, 20, 0, 0, 0, 0, time.UTC), Merged: true, MergedAt: time.Date(2026, time.August, 3, 0, 0, 0, 0, time.UTC)},
+		{Number: 3, CreatedAt: time.Date(2026, time.August, 4, 0, 0, 0, 0, time.UTC), Merged: true, MergedAt: time.Date(2026, time.August, 5, 0, 0, 0, 0, time.UTC)},
+		{Number: 4, CreatedAt: time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC), Merged: true, MergedAt: time.Date(2026, time.July, 2, 0, 0, 0, 0, time.UTC)},
+	}
+
+	opened, merged := dashboardPeriodPRs(prs, start, end)
+	if len(opened) != 2 || opened[0].Number != 1 || opened[1].Number != 3 {
+		t.Fatalf("opened PRs = %#v, want [1 3]", opened)
+	}
+	if len(merged) != 2 || merged[0].Number != 2 || merged[1].Number != 3 {
+		t.Fatalf("merged PRs = %#v, want [2 3]", merged)
 	}
 }
 
@@ -111,10 +130,71 @@ func TestDashboardStatusAndMarkdown(t *testing.T) {
 	}
 
 	markdown := markdownReport(report)
-	for _, expected := range []string{"# RepoTrends Report", "`owner/repo`", "`@octocat`", "2026", "2025", "2h 0m"} {
+	for _, expected := range []string{"# RepoTrends Report", "`owner/repo`", "`@octocat`", "2025/01 → 2026/01", "Baseline", "Target", "2h 0m", "PRs Opened", "PRs Merged", "Median Release PR Open→Main/Master Merge"} {
 		if !strings.Contains(markdown, expected) {
 			t.Fatalf("markdown report does not contain %q", expected)
 		}
+	}
+	baseline := strings.Index(markdown, "| 2025/01 → 2026/01 | Baseline | 2025/01")
+	target := strings.Index(markdown, "| 2025/01 → 2026/01 | Target | 2026/01")
+	if baseline < 0 || target < 0 || baseline >= target {
+		t.Fatalf("markdown rows are not ordered Baseline then Target:\n%s", markdown)
+	}
+}
+
+func TestOrderedDashboardTableEntriesUsesComparisonAsBaseline(t *testing.T) {
+	comparison := dashboardMetric{PRs: 20}
+	row := dashboardRow{
+		Label: "2024/08", Primary: dashboardMetric{PRs: 10},
+		ComparisonLabel: "2026/08", Comparison: &comparison,
+	}
+	entries := orderedDashboardTableEntries(row)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	if entries[0].Role != "Baseline" || entries[0].Period != "2026/08" || entries[0].Metric.PRs != 20 {
+		t.Fatalf("baseline entry = %#v", entries[0])
+	}
+	if entries[1].Role != "Target" || entries[1].Period != "2024/08" || entries[1].Metric.PRs != 10 {
+		t.Fatalf("target entry = %#v", entries[1])
+	}
+}
+
+func TestShouldCombineActivityMonths(t *testing.T) {
+	comparison := dashboardMetric{}
+	tests := []struct {
+		name string
+		rows []dashboardRow
+		want bool
+	}{
+		{
+			name: "same year contiguous previous-month comparison",
+			rows: []dashboardRow{
+				{Label: "2026/06", ComparisonLabel: "2026/05", Comparison: &comparison},
+				{Label: "2026/07", ComparisonLabel: "2026/06", Comparison: &comparison},
+				{Label: "2026/08", ComparisonLabel: "2026/07", Comparison: &comparison},
+			},
+			want: true,
+		},
+		{
+			name: "different years",
+			rows: []dashboardRow{{Label: "2026/08", ComparisonLabel: "2025/08", Comparison: &comparison}},
+			want: false,
+		},
+		{
+			name: "same year with a gap",
+			rows: []dashboardRow{
+				{Label: "2026/08", ComparisonLabel: "2026/06", Comparison: &comparison},
+			},
+			want: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldCombineActivityMonths(test.rows); got != test.want {
+				t.Fatalf("shouldCombineActivityMonths() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -125,6 +205,22 @@ func TestMarkdownUnavailableWhileRunning(t *testing.T) {
 	dashboardMux(state).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestDashboardComparisonPresentation(t *testing.T) {
+	for _, expected := range []string{
+		"r.comparisonLabel?'none':'grid'",
+		"function renderHeatmaps(r)",
+		"Continuous — ",
+		"Baseline — ",
+		"Target — ",
+		"PR Open→Merge",
+		"Release PR Open→Main/Master Merge 中央値",
+	} {
+		if !strings.Contains(dashboardHTML, expected) {
+			t.Fatalf("dashboard HTML does not contain %q", expected)
+		}
 	}
 }
 

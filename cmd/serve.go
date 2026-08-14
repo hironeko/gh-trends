@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ type dashboardPlan struct {
 
 type dashboardMetric struct {
 	PRs              int            `json:"prs"`
+	MergedPRs        int            `json:"mergedPrs"`
 	Releases         int            `json:"releases"`
 	LeadTime         string         `json:"leadTime"`
 	LeadTimeHours    float64        `json:"leadTimeHours"`
@@ -67,6 +69,7 @@ type dashboardReport struct {
 	ComparisonYear  int            `json:"comparisonYear,omitempty"`
 	PrimaryLabel    string         `json:"primaryLabel"`
 	ComparisonLabel string         `json:"comparisonLabel,omitempty"`
+	CombineActivity bool           `json:"combineActivity,omitempty"`
 	GeneratedAt     string         `json:"generatedAt"`
 	Rows            []dashboardRow `json:"rows"`
 }
@@ -617,22 +620,79 @@ func collectDashboard(state *dashboardState, targetRepo string, year, comparison
 			state.advance()
 		}
 	}
+	report.CombineActivity = shouldCombineActivityMonths(report.Rows)
 	state.complete(report)
+}
+
+func shouldCombineActivityMonths(rows []dashboardRow) bool {
+	if len(rows) == 0 || rows[0].ComparisonLabel == "" {
+		return false
+	}
+	seen := make(map[int]bool)
+	year := 0
+	for _, row := range rows {
+		for _, label := range []string{row.Label, row.ComparisonLabel} {
+			parts := strings.Split(label, "/")
+			if len(parts) != 2 {
+				return false
+			}
+			labelYear, yearErr := strconv.Atoi(parts[0])
+			labelMonth, monthErr := strconv.Atoi(parts[1])
+			if yearErr != nil || monthErr != nil || labelMonth < 1 || labelMonth > 12 {
+				return false
+			}
+			if year == 0 {
+				year = labelYear
+			} else if labelYear != year {
+				return false
+			}
+			seen[labelYear*12+labelMonth-1] = true
+		}
+	}
+	months := make([]int, 0, len(seen))
+	for month := range seen {
+		months = append(months, month)
+	}
+	slices.Sort(months)
+	for index := 1; index < len(months); index++ {
+		if months[index] != months[index-1]+1 {
+			return false
+		}
+	}
+	return true
 }
 
 func fetchDashboardMetric(targetRepo string, selection dashboardMonthSelection) (dashboardMetric, error) {
 	start := selection.Date
 	end := start.AddDate(0, 1, 0).Add(-time.Nanosecond)
 	if selection.PartialDay > 0 {
-		end = comparableMonthEnd(start.Year(), start.Month(), selection.PartialDay)
+		day := comparableMonthEnd(start.Year(), start.Month(), selection.PartialDay)
+		end = day.Add(24*time.Hour - time.Nanosecond)
 	}
 	prs, err := github.FetchPullRequests(targetRepo, start.Format("2006-01-02"), end.Format("2006-01-02"), author, label, true)
 	if err != nil {
 		return dashboardMetric{}, err
 	}
-	metric := metricFromStats(stats.CalculateStats(CalculateLeadTimes(prs)))
-	metric.DailyPRs = dailyPRCounts(prs, start, end)
+	openedPRs, mergedPRs := dashboardPeriodPRs(prs, start, end)
+	metric := metricFromStats(stats.CalculateStats(CalculateLeadTimes(mergedPRs)))
+	metric.PRs = len(openedPRs)
+	metric.MergedPRs = len(mergedPRs)
+	metric.DailyPRs = dailyPRCounts(openedPRs, start, end)
 	return metric, nil
+}
+
+func dashboardPeriodPRs(prs []github.PullRequest, start, end time.Time) ([]github.PullRequest, []github.PullRequest) {
+	opened := make([]github.PullRequest, 0, len(prs))
+	merged := make([]github.PullRequest, 0, len(prs))
+	for _, pr := range prs {
+		if !pr.CreatedAt.Before(start) && !pr.CreatedAt.After(end) {
+			opened = append(opened, pr)
+		}
+		if pr.Merged && !pr.MergedAt.IsZero() && !pr.MergedAt.Before(start) && !pr.MergedAt.After(end) {
+			merged = append(merged, pr)
+		}
+	}
+	return opened, merged
 }
 
 func dailyPRCounts(prs []github.PullRequest, start, end time.Time) map[string]int {
@@ -697,30 +757,37 @@ func markdownReport(report *dashboardReport) string {
 		fmt.Fprintf(&b, "- Comparison period: %s\n", report.ComparisonLabel)
 	}
 	fmt.Fprintf(&b, "- Generated: %s\n- Dependabot PRs: excluded\n\n", report.GeneratedAt)
-	fmt.Fprintf(&b, "| 月 | %s PR | %s リリース | %s Lead Time | %s Approval→Merge | %s Release→Main | %s Hotfix | %s Revert |", report.PrimaryLabel, report.PrimaryLabel, report.PrimaryLabel, report.PrimaryLabel, report.PrimaryLabel, report.PrimaryLabel, report.PrimaryLabel)
-	if report.ComparisonLabel != "" {
-		fmt.Fprintf(&b, " %s PR | %s リリース | %s Lead Time | %s Approval→Merge | %s Release→Main | %s Hotfix | %s Revert |", report.ComparisonLabel, report.ComparisonLabel, report.ComparisonLabel, report.ComparisonLabel, report.ComparisonLabel, report.ComparisonLabel, report.ComparisonLabel)
-	}
-	b.WriteString("\n|---|" + strings.Repeat("---:|", 7))
-	if report.ComparisonLabel != "" {
-		b.WriteString(strings.Repeat("---:|", 7))
-	}
-	b.WriteString("\n")
+	b.WriteString("| Comparison | Role | Period | PRs Opened | PRs Merged | Releases | PR Open→Merge | Approval→Merge | Median Release PR Open→Main/Master Merge | Hotfix | Revert |\n")
+	b.WriteString("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	for _, row := range report.Rows {
-		p := row.Primary
-		rowLabel := row.Label
-		if row.ComparisonLabel != "" {
-			rowLabel += " ↔ " + row.ComparisonLabel
+		for _, entry := range orderedDashboardTableEntries(row) {
+			metric := entry.Metric
+			fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %s | %s | %s | %d | %d |\n",
+				entry.Comparison, entry.Role, entry.Period, metric.PRs, metric.MergedPRs, metric.Releases, metric.LeadTime,
+				metric.ApprovalToMerge, metric.ReleaseToMain, metric.Hotfixes, metric.Reverts)
 		}
-		fmt.Fprintf(&b, "| %s | %d | %d | %s | %s | %s | %d | %d |", rowLabel, p.PRs, p.Releases, p.LeadTime, p.ApprovalToMerge, p.ReleaseToMain, p.Hotfixes, p.Reverts)
-		if row.Comparison != nil {
-			c := row.Comparison
-			fmt.Fprintf(&b, " %d | %d | %s | %s | %s | %d | %d |", c.PRs, c.Releases, c.LeadTime, c.ApprovalToMerge, c.ReleaseToMain, c.Hotfixes, c.Reverts)
-		}
-		b.WriteString("\n")
 	}
-	b.WriteString("\n> Release→Mainは `release/*` から `main/master` へのPR作成からマージまでの中央値です。\n")
+	b.WriteString("\n> PR Open→Merge is the median `mergedAt - createdAt` for PRs merged in the period.\n")
+	b.WriteString("> Median Release PR Open→Main/Master Merge applies the same calculation only to `release/* → main/master` PRs.\n")
 	return b.String()
+}
+
+type dashboardTableEntry struct {
+	Comparison string
+	Role       string
+	Period     string
+	Metric     dashboardMetric
+}
+
+func orderedDashboardTableEntries(row dashboardRow) []dashboardTableEntry {
+	if row.Comparison == nil || row.ComparisonLabel == "" {
+		return []dashboardTableEntry{{Comparison: row.Label, Role: "Current", Period: row.Label, Metric: row.Primary}}
+	}
+	pair := row.ComparisonLabel + " → " + row.Label
+	return []dashboardTableEntry{
+		{Comparison: pair, Role: "Baseline", Period: row.ComparisonLabel, Metric: *row.Comparison},
+		{Comparison: pair, Role: "Target", Period: row.Label, Metric: row.Primary},
+	}
 }
 
 func openBrowser(url string) {
@@ -739,9 +806,14 @@ func openBrowser(url string) {
 
 const dashboardHTML = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RepoTrends</title><style>
 .heatmap .day,.legend .day{background:#161b22;box-shadow:inset 0 0 0 1px #30363d}.heatmap .day[data-level="1"],.legend .day[data-level="1"]{background:#0e4429;box-shadow:none}.heatmap .day[data-level="2"],.legend .day[data-level="2"]{background:#006d32;box-shadow:none}.heatmap .day[data-level="3"],.legend .day[data-level="3"]{background:#26a641;box-shadow:none}.heatmap .day[data-level="4"],.legend .day[data-level="4"]{background:#39d353;box-shadow:none}
+table th:nth-child(-n+3),table td:nth-child(-n+3){text-align:left}tr.pair-start td{border-top:2px solid #34415f}.position{display:inline-block;min-width:64px;border-radius:999px;padding:3px 8px;text-align:center;font-size:11px;font-weight:700}.position.baseline{background:#2b344b;color:#bdc8e6}.position.target{background:#123d2b;color:#56d88b}.position.current{background:#243354;color:#9fc1ff}
+.activity-extra{border-top:1px solid #2a3657;margin-top:18px;padding-top:18px}.activity-extra .activity-head{margin-bottom:4px}
 :root{color-scheme:dark;--bg:#0b1020;--panel:#151c31;--line:#2a3657;--text:#edf2ff;--muted:#9eabd0;--a:#70a5ff;--b:#f3ad61}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px system-ui,sans-serif}.wrap{max-width:1280px;margin:auto;padding:30px}header{display:flex;align-items:center;justify-content:space-between;gap:16px}h1{font-size:28px;margin:0}.sub,.muted,footer{color:var(--muted)}.actions{display:flex;gap:8px}button,.button{background:#243354;color:white;border:1px solid #40517a;border-radius:8px;padding:9px 13px;text-decoration:none;cursor:pointer}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin-top:18px}.progress-head,.activity-head{display:flex;justify-content:space-between;gap:16px;align-items:center}.track{height:16px;background:#27304a;border-radius:10px;overflow:hidden;margin:12px 0}.bar{height:100%;width:0;background:linear-gradient(90deg,var(--a),#7ce3d0);transition:width .35s}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}.card b{display:block;font-size:25px;margin-top:8px}.activity-scroll{overflow-x:auto;padding:14px 0 4px}.activity-layout{display:flex;gap:8px;min-width:max-content}.weekdays{display:grid;grid-template-rows:repeat(7,12px);gap:3px;color:var(--muted);font-size:9px;line-height:12px}.heatmap{display:grid;grid-template-rows:repeat(7,12px);grid-auto-flow:column;grid-auto-columns:12px;gap:3px}.day{width:12px;height:12px;border-radius:2px;background:#222b40}.day.outside{opacity:.25}.day[data-level="1"]{background:#0e4429}.day[data-level="2"]{background:#006d32}.day[data-level="3"]{background:#26a641}.day[data-level="4"]{background:#39d353}.legend{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:11px}.legend .day{display:inline-block}.charts{display:grid;grid-template-columns:1fr 1fr;gap:18px}canvas{width:100%;height:260px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;white-space:nowrap}th,td{border-bottom:1px solid var(--line);padding:10px;text-align:right}th:first-child,td:first-child{text-align:left}#dashboard{display:none}.error{color:#ff8e9d}footer{margin:20px 0}@media(max-width:800px){.charts{grid-template-columns:1fr}header,.activity-head{align-items:flex-start;flex-direction:column}}@media print{body{background:white;color:#111}.wrap{max-width:none;padding:0}.panel,.card{background:white;border-color:#bbb}.actions,#progress{display:none!important}.muted,.sub,footer{color:#555}}
 </style></head><body><div class="wrap"><header><div><h1>RepoTrends</h1><div class="sub" id="subtitle">GitHub analytics dashboard</div></div><div class="actions" id="actions" style="display:none"><a class="button" href="/report.md">Markdown</a><button onclick="window.print()">印刷・PDF保存</button></div></header><section class="panel" id="progress"><div class="progress-head"><b id="stage">開始しています</b><span id="percent">0%</span></div><div class="track"><div class="bar" id="bar"></div></div><div class="muted"><span id="count">0 / 0</span> ・経過 <span id="elapsed">0s</span></div><div class="error" id="error"></div></section><main id="dashboard"><section class="cards" id="cards"></section><section class="panel"><div class="activity-head"><div><h3 id="activityTitle" style="margin:0 0 5px">PR Activity</h3><span class="muted" id="activitySummary"></span></div><div class="legend"><span>Less</span><i class="day"></i><i class="day" data-level="1"></i><i class="day" data-level="2"></i><i class="day" data-level="3"></i><i class="day" data-level="4"></i><span>More</span></div></div><div class="activity-scroll"><div class="activity-layout"><div class="weekdays"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div><div class="heatmap" id="heatmap"></div></div></div></section><section class="charts"><div class="panel"><h3>PRリードタイム中央値（時間）</h3><canvas id="leadChart"></canvas></div><div class="panel"><h3>リリース回数</h3><canvas id="releaseChart"></canvas></div></section><section class="panel table-wrap"><h3>月次比較</h3><table id="table"></table></section></main><footer>データはlocalhost内で表示されます。Dependabot PRは除外されています。</footer></div><script>
-const $=id=>document.getElementById(id);let rendered=false;async function poll(){try{const s=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json()),pct=s.total?Math.round(s.completed/s.total*100):0;$('bar').style.width=pct+'%';$('percent').textContent=pct+'%';$('stage').textContent=s.stage;$('count').textContent=s.completed+' / '+s.total;$('elapsed').textContent=s.elapsed;if(s.error)$('error').textContent=s.error;if(s.status==='complete'&&!rendered){rendered=true;render(s.report)}if(s.status==='running')setTimeout(poll,700)}catch(e){$('error').textContent=e;setTimeout(poll,1500)}}poll();function total(rows,key,side='primary'){return rows.reduce((n,r)=>n+(r[side]?.[key]||0),0)}function render(r){$('progress').style.display='none';$('dashboard').style.display='block';$('actions').style.display='flex';$('subtitle').textContent=r.repository+(r.author?' ・ @'+r.author:' ・ 全Author')+' ・ '+r.primaryLabel+(r.comparisonLabel?' vs '+r.comparisonLabel:'');const cards=[['対象PR',total(r.rows,'prs')],['リリース',total(r.rows,'releases')],['Hotfix',total(r.rows,'hotfixes')],['Revert',total(r.rows,'reverts')]];$('cards').innerHTML=cards.map(x=>'<div class="card"><span class="muted">'+x[0]+' ('+r.primaryLabel+')</span><b>'+x[1]+'</b></div>').join('');heatmap(r);draw('leadChart',r,'leadTimeHours');draw('releaseChart',r,'releases');table(r)}
-function heatmap(r){const daily={};for(const row of r.rows)Object.assign(daily,row.primary.dailyPRs||{});const dates=Object.keys(daily),totalPRs=dates.reduce((n,d)=>n+daily[d],0),max=Math.max(...Object.values(daily),1);$('activityTitle').textContent=r.author?'PR Contributions — @'+r.author:'Repository PR Activity';$('activitySummary').textContent=totalPRs+' PRs opened across '+dates.length+' active days · '+r.primaryLabel;const first=r.rows[0].label.split('/').map(Number),last=r.rows[r.rows.length-1].label.split('/').map(Number),start=new Date(Date.UTC(first[0],first[1]-1,1)),end=new Date(Date.UTC(last[0],last[1],0)),today=new Date(),currentEnd=new Date(Date.UTC(today.getFullYear(),today.getMonth(),today.getDate()));if(end>currentEnd)end.setTime(currentEnd.getTime());const cursor=new Date(start);cursor.setUTCDate(cursor.getUTCDate()-cursor.getUTCDay());const grid=$('heatmap');grid.innerHTML='';for(;cursor<=end;cursor.setUTCDate(cursor.getUTCDate()+1)){const key=cursor.toISOString().slice(0,10),count=daily[key]||0,cell=document.createElement('i');cell.className='day'+(cursor<start?' outside':'');const level=count?Math.max(1,Math.ceil(count/max*4)):0;cell.dataset.level=level;cell.title=key+': '+count+' PR'+(count===1?'':'s');grid.appendChild(cell)}}
-function draw(id,r,key){const c=$(id),d=devicePixelRatio||1,w=c.clientWidth,h=260;c.width=w*d;c.height=h*d;const x=c.getContext('2d');x.scale(d,d);const values=r.rows.flatMap(v=>[v.primary[key],v.comparison?.[key]||0]),max=Math.max(...values,1);x.strokeStyle='#34415f';x.fillStyle='#9eabd0';x.font='12px system-ui';for(let i=0;i<5;i++){const y=20+(h-55)*i/4;x.beginPath();x.moveTo(35,y);x.lineTo(w-10,y);x.stroke();x.fillText(Math.round(max*(4-i)/4),4,y+4)}line(r.rows.map(v=>v.primary[key]),'#70a5ff',r.primaryLabel,18);if(r.comparisonLabel)line(r.rows.map(v=>v.comparison?.[key]||0),'#f3ad61',r.comparisonLabel,35);function line(a,color,label,ly){x.strokeStyle=color;x.lineWidth=2;x.beginPath();a.forEach((v,i)=>{const px=42+(w-62)*(i/Math.max(a.length-1,1)),py=20+(h-55)*(1-v/max);i?x.lineTo(px,py):x.moveTo(px,py);x.fillStyle=color;x.fillRect(px-3,py-3,6,6);x.fillStyle='#9eabd0';x.fillText(r.rows[i].label.slice(5),px-10,h-12)});x.stroke();x.fillStyle=color;x.fillText(label,w-150,ly)}}function table(r){let h='<thead><tr><th>月</th>'+head(r.primaryLabel);if(r.comparisonLabel)h+=head(r.comparisonLabel);h+='</tr></thead><tbody>';for(const row of r.rows){const label=row.comparisonLabel?row.label+' ↔ '+row.comparisonLabel:row.label;h+='<tr><td>'+label+'</td>'+cells(row.primary);if(row.comparison)h+=cells(row.comparison);h+='</tr>'}h+='</tbody>';$('table').innerHTML=h}function head(y){return '<th>'+y+' PR</th><th>'+y+' リリース</th><th>'+y+' LeadTime</th><th>'+y+' Approval→Merge</th><th>'+y+' Release→Main</th><th>'+y+' Hotfix</th><th>'+y+' Revert</th>'}function cells(v){return '<td>'+v.prs+'</td><td>'+v.releases+'</td><td>'+v.leadTime+'</td><td>'+v.approvalToMerge+'</td><td>'+v.releaseToMain+'</td><td>'+v.hotfixes+'</td><td>'+v.reverts+'</td>'}
+const $=id=>document.getElementById(id);let rendered=false;async function poll(){try{const s=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json()),pct=s.total?Math.round(s.completed/s.total*100):0;$('bar').style.width=pct+'%';$('percent').textContent=pct+'%';$('stage').textContent=s.stage;$('count').textContent=s.completed+' / '+s.total;$('elapsed').textContent=s.elapsed;if(s.error)$('error').textContent=s.error;if(s.status==='complete'&&!rendered){rendered=true;render(s.report)}if(s.status==='running')setTimeout(poll,700)}catch(e){$('error').textContent=e;setTimeout(poll,1500)}}poll();function total(rows,key,side='primary'){return rows.reduce((n,r)=>n+(r[side]?.[key]||0),0)}function render(r){$('progress').style.display='none';$('dashboard').style.display='block';$('actions').style.display='flex';$('subtitle').textContent=r.repository+(r.author?' ・ @'+r.author:' ・ 全Author')+' ・ '+r.primaryLabel+(r.comparisonLabel?' vs '+r.comparisonLabel:'');const cards=[['PRs Opened',total(r.rows,'prs')],['PRs Merged',total(r.rows,'mergedPrs')],['Releases',total(r.rows,'releases')],['Hotfix',total(r.rows,'hotfixes')],['Revert',total(r.rows,'reverts')]];$('cards').style.display=r.comparisonLabel?'none':'grid';$('cards').innerHTML=r.comparisonLabel?'':cards.map(x=>'<div class="card"><span class="muted">'+x[0]+' ('+r.primaryLabel+')</span><b>'+x[1]+'</b></div>').join('');document.querySelector('.charts .panel h3').textContent='PR Open→Merge 中央値（時間）';renderHeatmaps(r);draw('leadChart',r,'leadTimeHours');draw('releaseChart',r,'releases');table(r)}
+function renderHeatmaps(r){const baseTitle=r.author?'PR Contributions — @'+r.author:'Repository PR Activity',primary=activitySeries(r.rows,'primary',r.primaryLabel),comparison=r.comparisonLabel?activitySeries(r.rows,'comparison',r.comparisonLabel):null,labels=r.rows.flatMap(row=>row.comparisonLabel?[row.label,row.comparisonLabel]:[row.label]),indexes=[...new Set(labels.map(monthIndex))].sort((a,b)=>a-b);let series;if(!comparison){series=[{...primary,title:baseTitle}]}else if(r.combineActivity){const first=monthLabel(indexes[0]),last=monthLabel(indexes[indexes.length-1]);series=[{daily:Object.assign({},comparison.daily,primary.daily),first,last,label:first+' → '+last,title:'Continuous — '+baseTitle}]}else{series=[{...comparison,title:'Baseline — '+baseTitle},{...primary,title:'Target — '+baseTitle}]}document.querySelectorAll('.activity-extra').forEach(node=>node.remove());series.forEach((item,index)=>{if(index===0){renderActivityMap($('activityTitle'),$('activitySummary'),$('heatmap'),item);return}const extra=document.createElement('div');extra.className='activity-extra';extra.innerHTML='<div class="activity-head"><div><h3 style="margin:0 0 5px"></h3><span class="muted"></span></div></div><div class="activity-scroll"><div class="activity-layout"><div class="weekdays"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div><div class="heatmap"></div></div></div>';$('activityTitle').closest('.panel').appendChild(extra);renderActivityMap(extra.querySelector('h3'),extra.querySelector('.muted'),extra.querySelector('.heatmap'),item)})}
+function activitySeries(rows,side,label){const daily={};for(const row of rows)if(row[side])Object.assign(daily,row[side].dailyPRs||{});const sideLabels=rows.map(row=>side==='primary'?row.label:row.comparisonLabel);return{daily,first:sideLabels[0],last:sideLabels[sideLabels.length-1],label,title:label}}
+function monthIndex(label){const parts=label.split('/').map(Number);return parts[0]*12+parts[1]-1}function monthLabel(index){return Math.floor(index/12)+'/'+String(index%12+1).padStart(2,'0')}
+function renderActivityMap(title,summary,grid,series){const dates=Object.keys(series.daily),totalPRs=dates.reduce((n,d)=>n+series.daily[d],0),max=Math.max(...Object.values(series.daily),1);title.textContent=series.title;summary.textContent=totalPRs+' PRs opened across '+dates.length+' active days · '+series.label;const first=series.first.split('/').map(Number),last=series.last.split('/').map(Number),start=new Date(Date.UTC(first[0],first[1]-1,1)),end=new Date(Date.UTC(last[0],last[1],0)),today=new Date(),currentEnd=new Date(Date.UTC(today.getFullYear(),today.getMonth(),today.getDate()));if(end>currentEnd)end.setTime(currentEnd.getTime());const cursor=new Date(start);cursor.setUTCDate(cursor.getUTCDate()-cursor.getUTCDay());grid.innerHTML='';for(;cursor<=end;cursor.setUTCDate(cursor.getUTCDate()+1)){const key=cursor.toISOString().slice(0,10),count=series.daily[key]||0,cell=document.createElement('i');cell.className='day'+(cursor<start?' outside':'');const level=count?Math.max(1,Math.ceil(count/max*4)):0;cell.dataset.level=level;cell.title=key+': '+count+' PR'+(count===1?'':'s');grid.appendChild(cell)}}
+function draw(id,r,key){const c=$(id),d=devicePixelRatio||1,w=c.clientWidth,h=260;c.width=w*d;c.height=h*d;const x=c.getContext('2d');x.scale(d,d);const values=r.rows.flatMap(v=>[v.primary[key],v.comparison?.[key]||0]),max=Math.max(...values,1);x.strokeStyle='#34415f';x.fillStyle='#9eabd0';x.font='12px system-ui';for(let i=0;i<5;i++){const y=20+(h-55)*i/4;x.beginPath();x.moveTo(35,y);x.lineTo(w-10,y);x.stroke();x.fillText(Math.round(max*(4-i)/4),4,y+4)}line(r.rows.map(v=>v.primary[key]),'#70a5ff',r.primaryLabel,18);if(r.comparisonLabel)line(r.rows.map(v=>v.comparison?.[key]||0),'#f3ad61',r.comparisonLabel,35);function line(a,color,label,ly){x.strokeStyle=color;x.lineWidth=2;x.beginPath();a.forEach((v,i)=>{const px=42+(w-62)*(i/Math.max(a.length-1,1)),py=20+(h-55)*(1-v/max);i?x.lineTo(px,py):x.moveTo(px,py);x.fillStyle=color;x.fillRect(px-3,py-3,6,6);x.fillStyle='#9eabd0';x.fillText(r.rows[i].label.slice(5),px-10,h-12)});x.stroke();x.fillStyle=color;x.fillText(label,w-150,ly)}}function table(r){let h='<thead><tr><th>比較</th><th>役割</th><th>期間</th><th>PR作成</th><th>PRマージ</th><th>リリース</th><th>PR Open→Merge</th><th>Approval→Merge</th><th>Release PR Open→Main/Master Merge 中央値</th><th>Hotfix</th><th>Revert</th></tr></thead><tbody>';for(const row of r.rows){if(!row.comparison){h+=comparisonRow(row.label,'Current',row.label,row.primary,'pair-start');continue}const pair=row.comparisonLabel+' → '+row.label;h+=comparisonRow(pair,'Baseline',row.comparisonLabel,row.comparison,'pair-start baseline');h+=comparisonRow(pair,'Target',row.label,row.primary,'target')}h+='</tbody>';$('table').innerHTML=h}function comparisonRow(pair,role,period,v,cls){return '<tr class="'+cls+'"><td>'+pair+'</td><td><span class="position '+role.toLowerCase()+'">'+role+'</span></td><td>'+period+'</td>'+cells(v)+'</tr>'}function cells(v){return '<td>'+v.prs+'</td><td>'+v.mergedPrs+'</td><td>'+v.releases+'</td><td>'+v.leadTime+'</td><td>'+v.approvalToMerge+'</td><td>'+v.releaseToMain+'</td><td>'+v.hotfixes+'</td><td>'+v.reverts+'</td>'}
 </script></body></html>`

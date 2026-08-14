@@ -163,11 +163,27 @@ This view answers a few questions at a glance:
 - Was activity steady, or concentrated on a small number of days?
 - Did release, hotfix, or revert activity change?
 
+#### Metric definitions
+
+- **PRs Opened** counts PRs whose `createdAt` is in the displayed period.
+- **PRs Merged** counts PRs whose `mergedAt` is in the displayed period.
+- **PR Open→Merge** is the median time from `createdAt` to `mergedAt` for
+  PRs merged in the displayed period.
+- **Median Release PR Open→Main/Master Merge** uses the same calculation, but only
+  for PRs whose head matches the configured release prefix (default:
+  `release/`) and whose base is `main` or `master`.
+
+The release metric starts when the release PR is opened. It is not the time
+since the release branch was created, its first commit, deployment, or
+production availability.
+
 The heatmap follows GitHub's dark contribution colors. With `--author`, it
 shows PRs opened by that account. Without `--author`, it shows repository-wide
-PR activity. Color intensity is calculated from the daily PR count in the
-selected primary period; comparison-period values remain in the charts and
-table.
+PR activity. Color intensity is calculated from daily PR counts. Cross-year
+comparisons render one heatmap per period; contiguous same-year comparisons
+are merged into one continuous heatmap without double-counting overlapping
+months. Summary cards are hidden in comparison mode so that primary-only totals
+are not mistaken for comparison results.
 
 With no selection flags, RepoTrends interactively asks for the repository,
 year or month mode, target period, comparison method, optional PR author, and
@@ -257,6 +273,9 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 - Inspired by [peco](https://github.com/peco/peco) for terminal UX
 - Built on [GitHub CLI](https://cli.github.com/) for robust GitHub API access
+- The GitHub CLI extension structure and distribution approach were informed
+  by [gh-pr-graph](https://github.com/orangain/gh-pr-graph), created by
+  [@orangain](https://github.com/orangain)
 - Thanks to the Go community for excellent CLI libraries
 
 ---
