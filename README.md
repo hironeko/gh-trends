@@ -7,6 +7,7 @@
 - **📊 Pull Request Analytics**: Lead time (avg/median), review time, merge wait, approval→merge
 - **🚀 Release Cadence**: Counts merges into `main/master` as releases (Dependabot excluded)
 - **💬 Code Review Insights**: Review comments + approvals are counted for coverage/quality
+- **🟩 PR Activity Heatmap**: GitHub-style daily activity for one author or the whole repository
 - **🚀 CI/CD Performance**: GitHub Actions workflow analysis
 - **🌐 Bilingual Output**: `--lang en|jp` / `--jp` for Japanese output
 - **⚡ Fast & Efficient**: Parallel fetching, chunked date ranges, smart sampling
@@ -136,9 +137,42 @@ Open a browser dashboard with a live monthly-fetch progress gauge:
 gh trends serve
 ```
 
+The dashboard includes summary cards, a GitHub-style PR activity heatmap,
+lead-time and release charts, and a detailed monthly comparison table.
+
+![RepoTrends monthly year-over-year dashboard](docs/images/monthly-year-over-year-dashboard.png)
+
+#### Example: compare a quarter with the same months one year earlier
+
+The screenshot above was generated from the public [`cli/cli`](https://github.com/cli/cli)
+repository with this reproducible command:
+
+```bash
+gh trends serve \
+  --repo cli/cli \
+  --year 2025 \
+  --month 12 \
+  --months 3 \
+  --compare-prev-year
+```
+
+This view answers a few questions at a glance:
+
+- Did monthly PR volume increase or decrease year over year?
+- Did median lead time improve over the same period?
+- Was activity steady, or concentrated on a small number of days?
+- Did release, hotfix, or revert activity change?
+
+The heatmap follows GitHub's dark contribution colors. With `--author`, it
+shows PRs opened by that account. Without `--author`, it shows repository-wide
+PR activity. Color intensity is calculated from the daily PR count in the
+selected primary period; comparison-period values remain in the charts and
+table.
+
 With no selection flags, RepoTrends interactively asks for the repository,
-target year, comparison year, optional PR author, and local port. You can also explicitly enable
-prompts while supplying some values in advance:
+year or month mode, target period, comparison method, optional PR author, and
+local port. You can also explicitly enable prompts while supplying some values
+in advance:
 
 ```bash
 gh trends serve --interactive --repo owner/repo
@@ -148,6 +182,29 @@ For non-interactive use, pass the selection flags directly:
 
 ```bash
 gh trends serve --repo owner/repo --year 2026 --compare-year 2025
+```
+
+Analyze and compare by month. `--months N` shows N monthly rows ending at
+`--month` (or the current month when `--month` is omitted):
+
+```bash
+# One month
+gh trends serve --repo owner/repo --year 2026 --month 8
+
+# Same month in the previous year
+gh trends serve --repo owner/repo --year 2026 --month 8 --compare-prev-year
+
+# Same month in a specified year
+gh trends serve --repo owner/repo --year 2026 --month 8 --compare-year 2024
+
+# Previous month
+gh trends serve --repo owner/repo --year 2026 --month 8 --compare-prev-month
+
+# Six monthly rows ending in August 2026
+gh trends serve --repo owner/repo --year 2026 --month 8 --months 6
+
+# Six months, with each month compared to the previous month
+gh trends serve --repo owner/repo --year 2026 --month 8 --months 6 --compare-prev-month
 ```
 
 The dashboard binds only to `127.0.0.1` by default. When data collection is
