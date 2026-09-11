@@ -41,7 +41,7 @@ var rootCmd = &cobra.Command{
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		// If no arguments provided, use interactive mode
-		if repo == "" && since == "" && until == "" {
+		if repo == "" && since == "" && until == "" && yearTrend == "" && compareYear == "" && !comparePrevYear && compareSince == "" && compareUntil == "" {
 			runInteractiveMode()
 			return
 		}
@@ -578,14 +578,30 @@ func runInteractiveMode() {
 		os.Exit(1)
 	}
 
-	// Step 3: Date range selection
-	startDate, endDate, err := selectDateRange()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Step 3: Date range vs. yearly trend selection (PR Analysis only)
+	yearlyMode := false
+	if analysisType == "PR Analysis" {
+		yearlyMode, err = selectYearlyTrendMode()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	}
-	since = startDate
-	until = endDate
+
+	if yearlyMode {
+		if err := selectYearlyTrendOptions(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		startDate, endDate, err := selectDateRange()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		since = startDate
+		until = endDate
+	}
 
 	// Step 4: Optional filters
 	if analysisType == "PR Analysis" {
@@ -596,7 +612,19 @@ func runInteractiveMode() {
 	fmt.Printf("\n✅ Configuration:\n")
 	fmt.Printf("  Repository: %s\n", repo)
 	fmt.Printf("  Analysis: %s\n", analysisType)
-	fmt.Printf("  Period: %s to %s\n", since, until)
+	if yearlyMode {
+		switch {
+		case compareYear != "":
+			fmt.Printf("  Yearly Trend: %s vs %s\n", yearTrend, compareYear)
+		case comparePrevYear:
+			yearInt, _ := strconv.Atoi(yearTrend)
+			fmt.Printf("  Yearly Trend: %s vs %d\n", yearTrend, yearInt-1)
+		default:
+			fmt.Printf("  Yearly Trend: %s\n", yearTrend)
+		}
+	} else {
+		fmt.Printf("  Period: %s to %s\n", since, until)
+	}
 	if author != "" {
 		fmt.Printf("  Author: %s\n", author)
 	}
@@ -773,6 +801,85 @@ func selectAnalysisType() (string, error) {
 		return "Actions Analysis", nil
 	}
 	return "PR Analysis", nil
+}
+
+// selectYearlyTrendMode asks whether to analyze a fixed date range or a
+// monthly yearly trend.
+func selectYearlyTrendMode() (bool, error) {
+	prompt := promptui.Select{
+		Label: "Select analysis mode",
+		Items: []string{
+			"Date range - analyze a specific period",
+			"Yearly trend - monthly breakdown with optional year-over-year comparison",
+		},
+	}
+	_, result, err := prompt.Run()
+	if err != nil {
+		return false, fmt.Errorf("prompt failed %w", err)
+	}
+	return strings.HasPrefix(result, "Yearly trend"), nil
+}
+
+// selectYearlyTrendOptions prompts for the target year and, optionally, a
+// comparison year, setting the same globals the --year/--compare-year flags use.
+func selectYearlyTrendOptions() error {
+	currentYear := time.Now().Year()
+
+	yearPrompt := promptui.Prompt{
+		Label:   "Enter year (YYYY)",
+		Default: fmt.Sprintf("%d", currentYear),
+		Validate: func(input string) error {
+			y, err := strconv.Atoi(strings.TrimSpace(input))
+			if err != nil || y < 2000 || y > currentYear {
+				return fmt.Errorf("enter a valid year between 2000 and %d", currentYear)
+			}
+			return nil
+		},
+	}
+	yearInput, err := yearPrompt.Run()
+	if err != nil {
+		return fmt.Errorf("prompt failed %w", err)
+	}
+	yearTrend = strings.TrimSpace(yearInput)
+	yearInt, _ := strconv.Atoi(yearTrend)
+
+	comparePrompt := promptui.Select{
+		Label: "Compare with another year?",
+		Items: []string{
+			"No comparison",
+			"Compare with previous year",
+			"Compare with a specific year",
+		},
+	}
+	_, compareResult, err := comparePrompt.Run()
+	if err != nil {
+		return fmt.Errorf("prompt failed %w", err)
+	}
+
+	switch compareResult {
+	case "Compare with previous year":
+		comparePrevYear = true
+	case "Compare with a specific year":
+		comparisonPrompt := promptui.Prompt{
+			Label: "Enter comparison year (YYYY)",
+			Validate: func(input string) error {
+				y, err := strconv.Atoi(strings.TrimSpace(input))
+				if err != nil || y < 2000 || y > currentYear {
+					return fmt.Errorf("enter a valid year between 2000 and %d", currentYear)
+				}
+				if y == yearInt {
+					return fmt.Errorf("comparison year must differ from %d", yearInt)
+				}
+				return nil
+			},
+		}
+		comparisonInput, err := comparisonPrompt.Run()
+		if err != nil {
+			return fmt.Errorf("prompt failed %w", err)
+		}
+		compareYear = strings.TrimSpace(comparisonInput)
+	}
+	return nil
 }
 
 // selectDateRange allows user to select date range with simplified options
