@@ -144,13 +144,3 @@ func (s *ShibaSpinner) Stop() {
 		// Non-blocking send to avoid deadlock
 	}
 }
-
-// UpdateMessage changes the loading message
-func (s *ShibaSpinner) UpdateMessage(message string) {
-	s.message = message
-}
-
-// Simple spinner without animation for CI environments
-func ShowSimpleProgress(message string) {
-	fmt.Printf("🔄 %s\n", message)
-}

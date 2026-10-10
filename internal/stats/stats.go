@@ -22,7 +22,6 @@ type Stats struct {
 	MedianMergeWaitTime         time.Duration
 	AverageCommitToPRTime       time.Duration
 	AverageCommitsPerPR         float64
-	ForcePushRate               float64 // This might be hard to calculate accurately from current data
 	WIPPRCount                  int
 	AverageReviewersPerPR       float64
 	SelfMergeRate               float64
@@ -48,22 +47,6 @@ type Stats struct {
 	ReleaseToMainCount          int
 	AverageReleaseToMain        time.Duration
 	MedianReleaseToMain         time.Duration
-
-	// Comment timing metrics
-	AverageTimeToFirstComment time.Duration
-	MedianTimeToFirstComment  time.Duration
-	AverageTimeToFirstReview  time.Duration
-	MedianTimeToFirstReview   time.Duration
-	AverageReviewResponseTime time.Duration
-	PRsWithComments           int
-	PRsWithReviews            int
-
-	// Comment quantity metrics
-	AverageCommentsPerPR float64
-	MedianCommentsPerPR  float64
-	CommentDensity       float64 // Comments per 100 lines of code changed
-	MaxCommentsInPR      int
-	PRsWithoutComments   int
 
 	// Review comment metrics (code review comments, excluding replies)
 	AverageReviewCommentsPerPR float64
@@ -116,16 +99,6 @@ func CalculateStats(prs []github.PullRequest) Stats {
 	var openPRs int
 	var earliestPRDate, latestPRDate time.Time
 
-	// Comment timing variables
-	var totalTimeToFirstComment, totalTimeToFirstReview, totalReviewResponseTime time.Duration
-	var timeToFirstCommentSlice, timeToFirstReviewSlice []time.Duration
-	var prsWithComments, prsWithReviews, prsWithResponseTime int
-
-	// Comment quantity variables
-	var totalComments int
-	var commentCountSlice []int
-	var maxComments int
-	var prsWithoutComments int
 	var releaseCount int
 
 	// Review comment quantity variables
@@ -318,35 +291,6 @@ func CalculateStats(prs []github.PullRequest) Stats {
 				releaseCount++
 				releaseMergeTimes = append(releaseMergeTimes, pr.MergedAt)
 			}
-		}
-
-		// Comment timing statistics
-		if pr.TimeToFirstComment > 0 {
-			totalTimeToFirstComment += pr.TimeToFirstComment
-			timeToFirstCommentSlice = append(timeToFirstCommentSlice, pr.TimeToFirstComment)
-		}
-
-		if pr.TimeToFirstReview > 0 {
-			totalTimeToFirstReview += pr.TimeToFirstReview
-			timeToFirstReviewSlice = append(timeToFirstReviewSlice, pr.TimeToFirstReview)
-			prsWithReviews++
-		}
-
-		if pr.AvgReviewResponseTime > 0 {
-			totalReviewResponseTime += pr.AvgReviewResponseTime
-			prsWithResponseTime++
-		}
-
-		// Comment quantity statistics
-		totalComments += pr.CommentCount
-		commentCountSlice = append(commentCountSlice, pr.CommentCount)
-		if pr.CommentCount > maxComments {
-			maxComments = pr.CommentCount
-		}
-		if pr.CommentCount > 0 {
-			prsWithComments++
-		} else {
-			prsWithoutComments++
 		}
 
 		// Review comment quantity statistics
@@ -576,72 +520,6 @@ func CalculateStats(prs []github.PullRequest) Stats {
 		}
 	}
 
-	// Calculate comment timing statistics
-	avgTimeToFirstComment := time.Duration(0)
-	if prsWithComments > 0 {
-		avgTimeToFirstComment = totalTimeToFirstComment / time.Duration(prsWithComments)
-	}
-
-	avgTimeToFirstReview := time.Duration(0)
-	if prsWithReviews > 0 {
-		avgTimeToFirstReview = totalTimeToFirstReview / time.Duration(prsWithReviews)
-	}
-
-	avgReviewResponseTime := time.Duration(0)
-	if prsWithResponseTime > 0 {
-		avgReviewResponseTime = totalReviewResponseTime / time.Duration(prsWithResponseTime)
-	}
-
-	// Calculate median times
-	var medianTimeToFirstComment, medianTimeToFirstReview time.Duration
-
-	if len(timeToFirstCommentSlice) > 0 {
-		sort.Slice(timeToFirstCommentSlice, func(i, j int) bool {
-			return timeToFirstCommentSlice[i] < timeToFirstCommentSlice[j]
-		})
-		mid := len(timeToFirstCommentSlice) / 2
-		if len(timeToFirstCommentSlice)%2 == 0 {
-			medianTimeToFirstComment = (timeToFirstCommentSlice[mid-1] + timeToFirstCommentSlice[mid]) / 2
-		} else {
-			medianTimeToFirstComment = timeToFirstCommentSlice[mid]
-		}
-	}
-
-	if len(timeToFirstReviewSlice) > 0 {
-		sort.Slice(timeToFirstReviewSlice, func(i, j int) bool {
-			return timeToFirstReviewSlice[i] < timeToFirstReviewSlice[j]
-		})
-		mid := len(timeToFirstReviewSlice) / 2
-		if len(timeToFirstReviewSlice)%2 == 0 {
-			medianTimeToFirstReview = (timeToFirstReviewSlice[mid-1] + timeToFirstReviewSlice[mid]) / 2
-		} else {
-			medianTimeToFirstReview = timeToFirstReviewSlice[mid]
-		}
-	}
-
-	// Calculate comment quantity statistics
-	avgCommentsPerPR := 0.0
-	if numPRs > 0 {
-		avgCommentsPerPR = float64(totalComments) / numPRs
-	}
-
-	var medianCommentsPerPR float64
-	if len(commentCountSlice) > 0 {
-		sort.Ints(commentCountSlice)
-		mid := len(commentCountSlice) / 2
-		if len(commentCountSlice)%2 == 0 {
-			medianCommentsPerPR = float64(commentCountSlice[mid-1]+commentCountSlice[mid]) / 2.0
-		} else {
-			medianCommentsPerPR = float64(commentCountSlice[mid])
-		}
-	}
-
-	// Calculate comment density (comments per 100 lines of code changed)
-	commentDensity := 0.0
-	if totalAdditions+totalDeletions > 0 {
-		commentDensity = float64(totalComments) / float64(totalAdditions+totalDeletions) * 100.0
-	}
-
 	// Calculate review comment statistics
 	avgReviewCommentsPerPR := 0.0
 	if numPRs > 0 {
@@ -687,7 +565,6 @@ func CalculateStats(prs []github.PullRequest) Stats {
 		MedianReleaseToMain:         medianReleaseToMain,
 		AverageCommitToPRTime:       avgCommitToPRTime,
 		AverageCommitsPerPR:         avgCommitsPerPR,
-		ForcePushRate:               0.0, // Cannot accurately calculate with current data
 		WIPPRCount:                  openPRs,
 		AverageReviewersPerPR:       avgReviewersPerPR,
 		SelfMergeRate:               selfMergeRate,
@@ -699,22 +576,6 @@ func CalculateStats(prs []github.PullRequest) Stats {
 		ReopenRate:                  reopenRate,
 		RevertLikeMerges:            revertLikeMerges,
 		ReleaseCount:                releaseCount,
-
-		// Comment timing metrics
-		AverageTimeToFirstComment: avgTimeToFirstComment,
-		MedianTimeToFirstComment:  medianTimeToFirstComment,
-		AverageTimeToFirstReview:  avgTimeToFirstReview,
-		MedianTimeToFirstReview:   medianTimeToFirstReview,
-		AverageReviewResponseTime: avgReviewResponseTime,
-		PRsWithComments:           prsWithComments,
-		PRsWithReviews:            prsWithReviews,
-
-		// Comment quantity metrics
-		AverageCommentsPerPR: avgCommentsPerPR,
-		MedianCommentsPerPR:  medianCommentsPerPR,
-		CommentDensity:       commentDensity,
-		MaxCommentsInPR:      maxComments,
-		PRsWithoutComments:   prsWithoutComments,
 
 		// Review comment metrics
 		AverageReviewCommentsPerPR: avgReviewCommentsPerPR,

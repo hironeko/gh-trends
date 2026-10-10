@@ -914,11 +914,6 @@ func selectDateRange() (string, string, error) {
 	}
 }
 
-// getCustomDateRange gets custom date range from user (legacy function)
-func getCustomDateRange() (string, string, error) {
-	return getEnhancedCustomDateRange()
-}
-
 // getEnhancedCustomDateRange provides flexible custom date input with smart parsing
 func getEnhancedCustomDateRange() (string, string, error) {
 	now := time.Now()

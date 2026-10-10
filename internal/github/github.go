@@ -39,9 +39,6 @@ type PullRequest struct {
 		SubmittedAt time.Time `json:"submittedAt"`
 		State       string    `json:"state"`
 	} `json:"reviews"`
-	Comments struct {
-		TotalCount int `json:"totalCount"`
-	} `json:"comments"`
 	MergeCommit struct {
 		Oid string `json:"oid"`
 	} `json:"mergeCommit"`
@@ -56,15 +53,7 @@ type PullRequest struct {
 	} `json:"mergedBy"`
 	HeadRefName string `json:"headRefName"`
 
-	// Comment timing metrics (calculated fields)
-	FirstCommentTime      time.Time     `json:"-"` // Time of first comment
-	FirstReviewTime       time.Time     `json:"-"` // Time of first review
-	TimeToFirstComment    time.Duration `json:"-"` // Time from creation to first comment
-	TimeToFirstReview     time.Duration `json:"-"` // Time from creation to first review
-	AvgReviewResponseTime time.Duration `json:"-"` // Average response time to reviews
-
 	// Comment quantity metrics (calculated fields)
-	CommentCount       int `json:"-"` // Total number of comments on PR
 	ReviewCommentCount int `json:"-"` // Total number of review comments (code comments, excluding replies)
 
 	// Lifecycle metrics
@@ -266,19 +255,6 @@ func fetchPRsWithDateSplit(repo string, since, until, author, label string, incl
 	return deduped, nil
 }
 
-// Comment represents a PR comment
-type Comment struct {
-	ID        string    `json:"id"`
-	Author    Author    `json:"author"`
-	CreatedAt time.Time `json:"createdAt"`
-	Body      string    `json:"body"`
-}
-
-// Author represents a GitHub user
-type Author struct {
-	Login string `json:"login"`
-}
-
 // FetchPRCommentTiming fetches comment timing data for PRs using GraphQL
 func FetchPRCommentTiming(repo string, prs []PullRequest) []PullRequest {
 	// Start shiba animation for comment analysis
@@ -340,7 +316,6 @@ func FetchPRCommentTiming(repo string, prs []PullRequest) []PullRequest {
 		}
 
 		prs[i].ReviewCommentCount = reviewCount + approvalCount
-		prs[i].CommentCount = 0 // not tracking issue-style comments here
 	}
 
 	// Animation will be stopped by defer, then show completion message
@@ -446,161 +421,6 @@ func fetchFirstReopenEvent(owner, repo string, number int) time.Time {
 		}
 	}
 	return earliest
-}
-
-// PRCommentTiming holds timing calculations for a single PR
-type PRCommentTiming struct {
-	FirstCommentTime      time.Time
-	FirstReviewTime       time.Time
-	TimeToFirstComment    time.Duration
-	TimeToFirstReview     time.Duration
-	AvgReviewResponseTime time.Duration
-	CommentCount          int
-}
-
-// fetchSinglePRCommentTiming fetches comment timing for a single PR
-func fetchSinglePRCommentTiming(repo string, prNumber int) PRCommentTiming {
-	timing := PRCommentTiming{}
-
-	// Fetch PR comments
-	args := []string{
-		"pr", "view", fmt.Sprintf("%d", prNumber),
-		"--repo", repo,
-		"--json", "comments,reviews,createdAt",
-	}
-
-	cmd := exec.Command("gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		// Silently ignore errors for individual PRs
-		return timing
-	}
-
-	var prData struct {
-		CreatedAt time.Time `json:"createdAt"`
-		Comments  []Comment `json:"comments"`
-		Reviews   []struct {
-			Author      Author    `json:"author"`
-			SubmittedAt time.Time `json:"submittedAt"`
-		} `json:"reviews"`
-	}
-
-	if err := json.Unmarshal(stdout.Bytes(), &prData); err != nil {
-		return timing
-	}
-
-	// Calculate comment count and first comment time
-	timing.CommentCount = len(prData.Comments)
-	if len(prData.Comments) > 0 {
-		timing.FirstCommentTime = prData.Comments[0].CreatedAt
-		timing.TimeToFirstComment = timing.FirstCommentTime.Sub(prData.CreatedAt)
-	}
-
-	// Calculate first review time
-	if len(prData.Reviews) > 0 {
-		timing.FirstReviewTime = prData.Reviews[0].SubmittedAt
-		timing.TimeToFirstReview = timing.FirstReviewTime.Sub(prData.CreatedAt)
-	}
-
-	// Calculate average review response time (simplified)
-	// This is a basic implementation - could be enhanced with more sophisticated logic
-	if len(prData.Reviews) > 1 {
-		var totalResponseTime time.Duration
-		var responseCount int
-
-		for i := 1; i < len(prData.Reviews); i++ {
-			responseTime := prData.Reviews[i].SubmittedAt.Sub(prData.Reviews[i-1].SubmittedAt)
-			if responseTime > 0 && responseTime < 7*24*time.Hour { // Filter out unrealistic times
-				totalResponseTime += responseTime
-				responseCount++
-			}
-		}
-
-		if responseCount > 0 {
-			timing.AvgReviewResponseTime = totalResponseTime / time.Duration(responseCount)
-		}
-	}
-
-	return timing
-}
-
-// fetchPRCommentCountsGraphQL fetches comment counts using GitHub GraphQL API
-func fetchPRCommentCountsGraphQL(owner, repo string, prs []PullRequest) map[int]int {
-	commentCounts := make(map[int]int)
-
-	// Build PR numbers for query
-	prNumbers := make([]int, len(prs))
-	for i, pr := range prs {
-		prNumbers[i] = pr.Number
-	}
-
-	// Create GraphQL query for multiple PRs
-	query := buildPRCommentQuery(owner, repo, prNumbers)
-
-	// Execute GraphQL query using gh api
-	cmd := exec.Command("gh", "api", "graphql", "-f", fmt.Sprintf("query=%s", query))
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("❌ GraphQL query failed: %s\n", stderr.String())
-		return commentCounts
-	}
-
-	// Parse GraphQL response
-	var response struct {
-		Data struct {
-			Repository map[string]struct {
-				Number   int `json:"number"`
-				Comments struct {
-					TotalCount int `json:"totalCount"`
-				} `json:"comments"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		fmt.Printf("❌ Failed to parse GraphQL response: %v\n", err)
-		return commentCounts
-	}
-
-	// Extract comment counts
-	for _, pr := range response.Data.Repository {
-		commentCounts[pr.Number] = pr.Comments.TotalCount
-	}
-
-	return commentCounts
-}
-
-// buildPRCommentQuery builds a GraphQL query for fetching PR comment counts
-func buildPRCommentQuery(owner, repo string, prNumbers []int) string {
-	// Build individual PR queries
-	var prQueries []string
-	for i, prNumber := range prNumbers {
-		if i >= 30 { // Limit to prevent query complexity issues
-			break
-		}
-		prQueries = append(prQueries, fmt.Sprintf(`
-		pr%d: pullRequest(number: %d) {
-			number
-			comments {
-				totalCount
-			}
-		}`, i, prNumber))
-	}
-
-	query := fmt.Sprintf(`{
-		repository(owner: "%s", name: "%s") {
-			%s
-		}
-	}`, owner, repo, strings.Join(prQueries, "\n"))
-
-	return query
 }
 
 // fetchMergedPRsByRange fetches merged PRs by mergedAt date range to catch PRs created before the window.

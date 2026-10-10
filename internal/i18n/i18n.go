@@ -96,17 +96,8 @@ var translations = map[string]map[string]string{
 	"Feature→Release PRs": {
 		"jp": "Feature→Release PR数",
 	},
-	"Feature→Release Time": {
-		"jp": "Feature→Release 時間",
-	},
 	"Release→Main PRs": {
 		"jp": "Release→Main PR数",
-	},
-	"Release→Main Time": {
-		"jp": "Release→Main 時間",
-	},
-	"Stability Metrics:": {
-		"jp": "🛡️ 安定性指標:",
 	},
 	"Stability Metrics (Counts):": {
 		"jp": "🛡️ 安定性指標: 件数",
@@ -120,41 +111,14 @@ var translations = map[string]map[string]string{
 	"⏱️ Timing Metrics:": {
 		"jp": "⏱️ 時間指標:",
 	},
-	"Duration": {
-		"jp": "時間",
-	},
-	"Average Lead Time": {
-		"jp": "平均リードタイム",
-	},
-	"Median Lead Time": {
-		"jp": "中央値リードタイム",
-	},
-	"Average Review Time": {
-		"jp": "平均レビュー開始まで",
-	},
-	"Median Review Time": {
-		"jp": "レビュー開始まで（中央値）",
-	},
 	"Review Time": {
 		"jp": "レビュー開始まで",
-	},
-	"Average Merge Wait Time": {
-		"jp": "レビュー後マージ待ち平均",
 	},
 	"Merge Wait Time": {
 		"jp": "レビュー後マージ待ち",
 	},
-	"Median Merge Wait Time": {
-		"jp": "レビュー後マージ待ち中央値",
-	},
-	"Average Approval→Merge Time": {
-		"jp": "承認→マージ平均時間",
-	},
 	"Approval→Merge Time": {
 		"jp": "承認→マージ時間",
-	},
-	"Median Approval→Merge Time": {
-		"jp": "承認→マージ中央値",
 	},
 	"Reopen→Merge Time": {
 		"jp": "再オープン→マージ時間",
@@ -164,9 +128,6 @@ var translations = map[string]map[string]string{
 	},
 	"Commit→PR Time": {
 		"jp": "コミット→PR時間",
-	},
-	"Avg Commit→PR Time": {
-		"jp": "コミット→PR平均時間",
 	},
 	"💻 Code Change Metrics:": {
 		"jp": "💻 コード変更指標:",
@@ -242,18 +203,6 @@ var translations = map[string]map[string]string{
 	},
 	"📝 No code review comments found in this period (%d PRs analyzed)": {
 		"jp": "📝 この期間にコードレビューコメントはありません (%d 件のPRを解析)",
-	},
-	"💡 This could indicate:": {
-		"jp": "💡 可能性:",
-	},
-	"   • Code quality is consistently high": {
-		"jp": "   • コード品質が安定して高い",
-	},
-	"   • Team does reviews via other channels": {
-		"jp": "   • 別チャネルでレビューしている",
-	},
-	"   • PRs are small and self-explanatory": {
-		"jp": "   • PRが小さく自明",
 	},
 	"🔀 Merge Type Distribution:": {
 		"jp": "🔀 マージ方式の分布:",
