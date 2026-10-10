@@ -61,3 +61,6 @@ build/
 # Local development
 local/
 tmp/
+
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json
