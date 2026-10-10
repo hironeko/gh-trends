@@ -77,3 +77,18 @@ After `make install`, invoke the built extension with `gh trends ...` (not
 branch into `main`/`master` (Dependabot PRs excluded) — not a deploy or a
 tagged version. Several metrics (`ReleaseCount`, `FeatureToReleaseCount`,
 `HotfixMerges`, etc.) are built around this release-branch convention.
+
+## Workflow rules
+
+- Always ask for explicit confirmation immediately before running
+  `git commit`, even if committing was implied by an earlier instruction in
+  the same task. Approval of the overall change does not carry over to the
+  commit step — ask again right before committing.
+- When reviewing a diff against `main` (via `/codex:review` or otherwise),
+  check beyond correctness: whether the implementation is idiomatic/
+  appropriate for Go (not just "does it work"), and whether the change
+  leaves behind anything unnecessary — dead code, unused fields, leftover
+  helpers, stale translation keys, etc. Reusing the dead-code audit done
+  earlier in this project (removed from `cmd/root.go`, `internal/github`,
+  `internal/stats`, `internal/animation`, `internal/i18n`) as the bar for
+  what "unnecessary" means here.
